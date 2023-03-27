@@ -8,7 +8,6 @@ def uimm2_node : Operand<XLenVT>, ImmLeaf<XLenVT, [{return isUInt<2>(Imm);}]> {
 def OPC_CUSTOM1   : RISCVOpcode<"CUSTOM1", 0b0001011>;
 
 def uimm2_node : Operand<XLenVT>, ImmLeaf<XLenVT, [{return isUint<2>(Imm);}]> {
->>>>>>> 806cea3f768b (simple cases for ext completed)
   let ParserMatchClass = UImmAsmOperand<2>;
   let DecoderMethod = "decodeUImmOperand<2>";
   let OperandType = "OPERAND_UIMM2";
