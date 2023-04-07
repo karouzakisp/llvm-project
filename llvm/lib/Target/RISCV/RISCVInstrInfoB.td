@@ -2,6 +2,15 @@
 //=== -- RISCVInstrInfoB.td RISCV-V thead-extension ba,bb,bc instructions
 
 
+//===--------------------------------------------------------------------------
+// Operand and SDNode transformation definitions.
+//===--------------------------------------------------------------------------
+
+
+def riscv_tstnbz  : SDNode<"llvm::RISCV::TSTNBZ", SDTUnaryOp>;
+
+
+
 def OPC_CUSTOM1   : RISCVOpcode<"CUSTOM1", 0b0001011>;
 
 def uimm2_node : Operand<XLenVT>, ImmLeaf<XLenVT, [{return isUInt<2>(Imm);}]> {
@@ -105,14 +114,18 @@ class shiftW_ir<bits<7> funct7, bits<3> funct3, string opcodestr>
   let Predicates = [HasStdExtBb] in {
      
     def : Pat<(sext_inreg GPR:$rs1, i1) , (EXT GPR:$rs1, 0, 0)>; 
-    def : Pat<(sext_inreg GPR:$rs1,  i8) , (EXT GPR:$rs1, 7, 0)>;
-    def : Pat<(sext_inreg GPR:$rs1,  i16) , (EXT GPR:$rs1, 15, 0)>;
+    def : Pat<(sext_inreg GPR:$rs1, i8) , (EXT GPR:$rs1, 7, 0)>;
+    def : Pat<(sext_inreg GPR:$rs1, i16) , (EXT GPR:$rs1, 15, 0)>;
     
     def : Pat<(and GPR:$rs1, 1), (EXTU GPR:$rs1, 0, 0)>;
     def : Pat<(and GPR:$rs1, 0xff), (EXTU GPR:$rs1, 7, 0)>;
     def : Pat<(and GPR:$rs1, 0xffff), (EXTU GPR:$rs1, 15, 0)>;
 
-   
+    foreach i = 1...12 in {
+       def : Pat<(and (shl GPR:$rs1, (XLenVT i)), 0xffff ),
+                (EXTU GPR:$rs1, 15, (XLenVT i))>;
+    }
+
     def : Pat<(ctlz GPR:$rs1), (FF1 GPR:$rs1)>;
     def : Pat<(ctlz (xor GPR:$rs1, -1)), (FF0 GPR:$rs1)>;
        
@@ -144,6 +157,7 @@ class shiftW_ir<bits<7> funct7, bits<3> funct3, string opcodestr>
                (SRL i32:$rs1, (SUB 32, GPR:$rs2)))>;
 
     def : PatGpr<int_riscv_tstnbz, TSTNBZ>; 
+    def : PatGpr<riscv_tstnbz, TSTNBZ>;
 
   } // Predicates = [HasStdExtBb] 
 
