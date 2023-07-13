@@ -475,11 +475,12 @@ FUNCTION_PASS("verify<safepoint-ir>", SafepointIRVerifierPass())
 FUNCTION_PASS("verify<scalar-evolution>", ScalarEvolutionVerifierPass())
 FUNCTION_PASS("view-cfg", CFGViewerPass())
 FUNCTION_PASS("view-cfg-only", CFGOnlyViewerPass())
-FUNCTION_PASS("view-dom", DomViewer())
-FUNCTION_PASS("view-dom-only", DomOnlyViewer())
-FUNCTION_PASS("view-post-dom", PostDomViewer())
-FUNCTION_PASS("view-post-dom-only", PostDomOnlyViewer())
-FUNCTION_PASS("wasm-eh-prepare", WasmEHPreparePass())
+FUNCTION_PASS("tlshoist", TLSVariableHoistPass())
+FUNCTION_PASS("transform-warning", WarnMissedTransformationsPass())
+FUNCTION_PASS("wia" , WIAPass())
+FUNCTION_PASS("tsan", ThreadSanitizerPass())
+FUNCTION_PASS("memprof", MemProfilerPass())
+FUNCTION_PASS("declare-to-assign", llvm::AssignmentTrackingPass())
 #undef FUNCTION_PASS
 
 #ifndef FUNCTION_PASS_WITH_PARAMS
