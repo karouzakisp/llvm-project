@@ -1834,6 +1834,7 @@ SDValue DAGCombiner::visit(SDNode *N) {
 
 SDValue DAGCombiner::combine(SDNode *N) {
   SDValue RV;
+  // while not stabilized 
   if (!DisableGenericCombines)
     RV = visit(N);
 
@@ -9890,7 +9891,7 @@ SDValue DAGCombiner::visitSRL(SDNode *N) {
   if (N1C && N1C->getAPIntValue() == (OpSizeInBits - 1)) {
     if (N0.getOpcode() == ISD::SRA)
       return DAG.getNode(ISD::SRL, SDLoc(N), VT, N0.getOperand(0), N1);
-  }
+  } 
 
   // fold (srl (ctlz x), "5") -> x  iff x has one bit set (the low bit).
   if (N1C && N0.getOpcode() == ISD::CTLZ &&
