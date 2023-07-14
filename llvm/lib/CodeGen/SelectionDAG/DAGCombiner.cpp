@@ -1993,6 +1993,7 @@ SDValue DAGCombiner::combine(SDNode *N) {
     return SDValue();
 
   SDValue RV;
+  // while not stabilized 
   if (!DisableGenericCombines)
     RV = visit(N);
 
@@ -10661,8 +10662,8 @@ SDValue DAGCombiner::visitSRL(SDNode *N) {
   // bit, which is unmodified by sra.
   if (N1C && N1C->getAPIntValue() == (OpSizeInBits - 1)) {
     if (N0.getOpcode() == ISD::SRA)
-      return DAG.getNode(ISD::SRL, DL, VT, N0.getOperand(0), N1);
-  }
+      return DAG.getNode(ISD::SRL, SDLoc(N), VT, N0.getOperand(0), N1);
+  } 
 
   // fold (srl (ctlz x), "5") -> x  iff x has one bit set (the low bit), and x has a power
   // of two bitwidth. The "5" represents (log2 (bitwidth x)).
