@@ -1,5 +1,5 @@
-#ifndef LLVM_ANALYSIS_WIDENINGINTEGERARITHMETICINFO_H
-#define LLVM_ANALYSIS_WIDENINGINTEGERARITHMETICINFO_H
+#ifndef LLVM_CODEGEN_WIDENINGINTEGERARITHMETICINFO_H
+#define LLVM_CODEGEN_WIDENINGINTEGERARITHMETICINFO_H
 
 
 #include "llvm/IR/Instruction.h"
@@ -21,26 +21,21 @@ enum IntegerFillType{
 class WideningIntegerSolutionInfo{
 public:
  
-  ~WideningIntegerInfo();
-  WideningIntegerInfo() = default; 
-  WideningIntegerInfo(Instruction *Instr, IntegerFillType fillType_,
+  ~WideningIntegerSolutionInfo();
+  WideningIntegerSolutionInfo() = default; 
+  WideningIntegerSolutionInfo(Instruction *Instr, IntegerFillType fillType_,
                       unsigned char width_)
-    : Instruction(Instr), fillType(fillType_), width(width_){} 
-  WideningIntegerInfo(WideningIntegerInfo &&Arg)
-    : instruction(Arg.instruction), 
-      fillType(Arg.fillType), width(Arg.width), {} 
+    : IntegerInstr(Instr), FillType(fillType_), Width(width_){} 
   
 
 private:
-  WideningIntegerInfo(const WideningIntegerInfo&) = delete
-  void operator=(const WideningIntegerInfo&) = delete
   
 
   // We care only about integer arithmetic instructions
   Instruction       *IntegerInstr=nullptr;
 
   // The updated instruction if we add an extension
-  Instruction       *UpdatedInstruction=nullptr;
+  Instruction       *UpdatedInstr=nullptr;
 
   // The cost of the extension 
   short int         ExtensionCost=0;
@@ -63,20 +58,20 @@ public:
     IntegerInstr = IntegerInstr_;
   }  
 
-  Instruction *getUpdatedInstruction(void);
-    return UpdatedInstruction;
+  Instruction *getUpdatedInstruction(void){
+    return UpdatedInstr;
   }
-  void setUpdatedInstruction(Instruction *UpdatedInstr){
-    UpdatedInstruction = UpdatedInstr;
+  void setUpdatedInstruction(Instruction *UpdatedInstr_){
+    UpdatedInstr = UpdatedInstr_;
   }
   
   short int getExtensionCost(void){
     return ExtensionCost;
   }
   void setExtensionCost(short int ExtensionCost_){
-    ExtensionCost = ExtensionCost_
+    ExtensionCost = ExtensionCost_;
   }
-  Integer_fill_type getIntegerFillType(void){
+  IntegerFillType getIntegerFillType(void){
     return FillType;
   }
   void setIntegerFillType(IntegerFillType FillType_){
@@ -97,6 +92,21 @@ public:
   void setUpdatedWidth(unsigned char UpdatedWidth_){
     UpdatedWidth = UpdatedWidth_;
   }
+  bool operator==(const WideningIntegerSolutionInfo& a){
+    return  this->Width == a.Width && 
+            this->FillType == a.FillType &&
+            this->ExtensionCost == a.ExtensionCost &&
+            this->UpdatedInstr == a.UpdatedInstr &&
+            this->IntegerInstr == a.IntegerInstr;
+  }
+  bool operator==(const WideningIntegerSolutionInfo& a){
+    return  this->Width == a.Width && 
+            this->FillType == a.FillType &&
+            this->ExtensionCost == a.ExtensionCost &&
+            this->UpdatedInstr == a.UpdatedInstr &&
+            this->IntegerInstr == a.IntegerInstr;
+  }
+  
 
   
 
