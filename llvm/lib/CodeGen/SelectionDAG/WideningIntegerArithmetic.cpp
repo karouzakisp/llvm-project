@@ -33,14 +33,18 @@ class WideningIntegerArithmetic {
     
     using SolutionMap = DenseMap<int, WideningIntegerSolutionInfo *>; 
     SolutionMap Solutions;
-  
+    
+    using AvailableSolutionsMap = DenseMap<int, 
+                    SmallVector<WideningIntegerSolutionInfo *>>;  
+    AvailableSolutionsMap AvailableSolutions;
+ 
     SDValue visit_widening(SDNode *Node);
     SDValue visitInstruction(SDNode *Node);
     SDValue visitANY_EXT_OR_TRUNC(SDNode *Node);
     SDValue visitXOR(SDNode *Node);
   
     void setFillType(EVT SrcVt, EVT DstVT);  
-    
+    bool isInteger(SDNode *Node); 
 };
 
 SDValue WideningIntegerArithmetic::visitInstruction(SDNode *Node){
@@ -81,6 +85,12 @@ SDValue WideningIntegerArithmetic::visitXOR(SDNode *Node ){
   int left_cost = LeftSolution->second->getExtensionCost();
   int right_cost = RightSolution->second->getExtensionCost();
   
+  auto leftAvailableSolutions = 
+      AvailableSolutions.find((N0.getNode())->getNodeId());
+  auto rightAvailableSolutions = 
+      AvailableSolutions.find((N1.getNode())->getNodeId());
+  // add left and right to Node available Solutions 
+  
   return SDValue(Node, 0);
 }
 
@@ -110,10 +120,23 @@ void WideningIntegerArithmetic::solve(){
   
   for (SDNode &Node : DAG.allnodes()){
       auto Solution = Solutions.find(Node.getNodeId());  
-      if(Solution == Solutions.end() ){ // If not solved visit it
+      if(Solution == Solutions.end() && 
+                     isInteger(&Node) ){ // If not solved visit it
         visit_widening(&Node);  
       }
     
   }
-   
 } 
+
+bool isInteger(SDNode *Node){
+  return Node->getValueType(0).isInteger();
+}
+
+
+
+
+
+
+
+
+
