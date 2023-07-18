@@ -40,7 +40,7 @@ private:
   // The cost of the extension 
   short int         ExtensionCost=0;
 
-  // Fill type for the upper bits of the register
+  // Fill type for the upper bits of the expression
   // can be zero, one or garbage
   IntegerFillType   FillType=anything;
 
@@ -91,13 +91,6 @@ public:
 
   void setUpdatedWidth(unsigned char UpdatedWidth_){
     UpdatedWidth = UpdatedWidth_;
-  }
-  bool operator==(const WideningIntegerSolutionInfo& a){
-    return  this->Width == a.Width && 
-            this->FillType == a.FillType &&
-            this->ExtensionCost == a.ExtensionCost &&
-            this->UpdatedInstr == a.UpdatedInstr &&
-            this->IntegerInstr == a.IntegerInstr;
   }
   bool operator==(const WideningIntegerSolutionInfo& a){
     return  this->Width == a.Width && 
