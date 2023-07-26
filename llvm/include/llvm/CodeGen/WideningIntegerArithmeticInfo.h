@@ -95,6 +95,32 @@ public:
   void getValueID() const {
     return Id;
   }
+  
+  void setOperands(SmallPtrSetImpl<WideningIntegerSolutionInfo *>  Operands_){
+    this.Operands = Operands_;
+  }
+  SmallPtrSetImpl<WideningIntegerSolutionInfo *>  getOperands(void) const {
+    return Operands;
+  }
+  
+  // Returns -1 if "this" is not redundant given solution b
+  // Returns 1 if "this" is redudant given solution b
+  // Returns 0 if b is redudant given solution "this"
+  int isRedudant(const WideningIntegerSolutionInfo &b){
+    if(this.Width > b.getWidth() && this.Cost < b.getCost() )
+      return -1;
+    else if(this.Width < b.getWidth() && this.Cost > b.getCost() )
+      return -1;
+    else if(this.Width >= b.getWidth() && this.Cost >= b.getCost() )
+      return 1;
+    else if(this.Width < b.getWidth() )
+      return -1
+    else if(b.getWidth() >= this.Width() && b.getCost() >= this.Cost )
+      return 0;
+    else if(b.getWidth() < this.Width() )
+      return -1;
+    return -1; 
+  }
 
 protected:
   
@@ -125,8 +151,8 @@ protected:
   
 private:  
   WIADerivedId Id;
-  // TODO can a SDNode have a child with more than 3 nodes? 
-  SmallPtrSet<WideningIntegerSolutionInfo *, 3>
+  // TODO can a SDNode have more than 4 Operands? 
+  SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
 }; // WideningIntegerSolutionInfo
 
 
@@ -154,8 +180,11 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
   
   virtual inline bool operator==(const WideningIntegerSolutionInfo& a) override
   {
-    return (isa<WIA_BINOP>(&a)); 
+    return (isa<WIA_BINOP>(&a));
+      
   }
+  
+  
 };
 
 
