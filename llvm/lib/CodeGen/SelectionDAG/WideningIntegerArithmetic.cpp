@@ -23,7 +23,7 @@ class WideningIntegerArithmetic {
     } 
   
     void solve();
-
+    
   private:
     enum IntegerFillType ExtensionChoice;   
  
@@ -54,7 +54,9 @@ SolutionSet rightSols, FillTypeSet operandFillTypes);
     bool canCombineSolutions(WideningIntegerSolutionInfo *leftSol, 
                              WideningIntegerSolutionInfo *rightSol, 
                              FillTypeSet OperandFillTypes);
-    
+
+    WideningIntegerSolutionInfo *findAllSolutions(
+                      WideningIntegerSolutionInfo *Sol);    
     WideningIntegerSolutionInfo *visitBINOP(
                           WideningIntegerSolutionInfo *LeftSol,
                           WideningIntegerSolutionInfo *RightSol);
@@ -280,6 +282,168 @@ bool WideningIntegerArithmetic::isSolved(SDNode *Node){
 
 
 
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::findAllSolutions(
+                      WideningIntegerSolutionInfo *Sol){
+  return NULL;
+} 
+    
+
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitBINOP(
+                          WideningIntegerSolutionInfo *BinOperator,
+                          WideningIntegerSolutionInfo *LeftSol,
+                          WideningIntegerSolutionInfo *RightSol){
+  unsigned opc = BinOperator->getOpcode();
+  unsigned newWidth = // TODO need to check what width is available for
+                      // this Target of this Binary operator of the form
+                      // width1 x width2 = newWidth
+                      // for example on rv64 we have addw
+                      // that is of the form i32 x i32 -> i32 
+                      // and stored in a sign extended format to i64
+  WideningIntegerSolutionInfo *Binop = new WIA_BINOP(opc,
+    ExtensionChoice, BinOperator->getWidth(), newWidth, 
+    BinOperator->getCost() + 1);
+    
+  return Binop; 
+
+}
+
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitFILL(
+                          WideningIntegerSolutionInfo *Sol){
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  WideningIntegerSolutionInfo *Fill = new WIA_FILL(
+    ExtensionOpc, Sol->getFillType(), Sol->getWidth(),
+    64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
+  addOperand(Sol);
+  return Fill; 
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN(
+                          WideningIntegerSolutionInfo *Sol){
+
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
+    ExtensionOpc, Sol->getFillType(), Sol->getWidth(),
+    64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
+  addOperand(Sol);
+  return Fill; 
+}
+    
+
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN_GARBAGE(
+      WideningIntegerSolutionInfo *Sol){
+  return NULL;
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNARROW(
+                          WideningIntegerSolutionInfo *Sol){
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
+    , Sol->getFillType(), Sol->getWidth(),
+    64/* TODO get Trunc Size */, Sol->getCost() + 1 );
+  addOperand(Sol);
+  return Trunc; 
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_EXT(
+                          WideningIntegerSolutionInfo *Sol){
+  // SExt or ZExt have only 1 operand
+  WideningIntegerSolutionInfo *N0 = 
+                      Sol->getOperands().begin()->second;
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  // We simply drop the extension and we will later see if it's needed.
+  WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(ExtensionOpc,
+    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
+    N0->getCost());
+  Expr->setOperands(N0->getOperands());
+
+}
+
+
+  
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_COPY(
+                          WideningIntegerSolutionInfo *Sol){
+  // TRUNCATE has only 1 operand
+  WideningIntegerSolutionInfo *N0 = 
+                Sol->getOperands().begin()->second;
+  
+  // We simply drop the truncation and we will later see if it's needed.
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOCOPY(ExtensionOpc,
+    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
+    N0->getCost());
+  Expr->setOperands(N0->getOperands());
+  return Expr;
+}
+// TODO What's the difference with DROP_LOCOPY and DROP_LOIGNORE
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_IGNORE(
+                          WideningIntegerSolutionInfo *Sol){
+  
+  // TRUNCATE has only 1 operand
+  WideningIntegerSolutionInfo *N0 = 
+                Sol->getOperands().begin()->second;
+  
+  // We simply drop the truncation and we will later see if it's needed.
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOIGNORE(ExtensionOpc,
+    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
+    N0->getCost());
+  Expr->setOperands(N0->getOperands());
+  return Expr;
+}
+
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitEXTLO(
+                          WideningIntegerSolutionInfo *LeftSol,
+                          WideningIntegerSolutionInfo *RightSol){
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
+  unsigned OldWidth, NewWidth; // TODO how to calculate OldWidth and NewWidth?
+  WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(ExtensionOpc,
+    ExtensionChoice, OldWidth, NewWidth, cost); 
+  
+  return Expr; 
+
+
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_FILL(
+                          WideningIntegerSolutionInfo *Sol){
+  WideningIntegerSolutionInfo *Expr = new WIA_SUBSUME_FILL(
+    ISD::ANY_EXTEND, ANYTHING, Sol->getWidth(), Sol->getUpdatedWidth(),
+    Sol->getCost());
+  return Expr;
+
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_INDEX(
+                          WideningIntegerSolutionInfo *Sol){
+  
+  // We implement this rule implicitly 
+  // On every solution we consider the index n to stand
+  // for all indices from n to w.
+  return NULL;
+
+
+}
+    
+WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNATURAL(
+                          WideningIntegerSolutionInfo *Sol){
+  
+  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
+                                                    ISD::ZERO_EXTEND;
+  
+  WideningIntegerSolutionInfo *Expr = new WIA_NATURAL(
+    ExtensionOpc, ExtensionChoice , Sol->getWidth(), Sol->getUpdatedWidth(),
+    Sol->getCost());
+  return Expr;
+
+}
 
 
 
