@@ -17,6 +17,32 @@ class WideningIntegerArithmetic {
   SelectionDAG &DAG;
   const TargetLowering &TLI; 
 
+  enum OperatorKind{
+    OK_ADD,
+    OK_SUB,
+    OK_XOR,
+    OK_OR,
+    OK_AND,
+    OK_DIVU,
+    OK_MOD,
+    OK_DIV,
+    OK_GE,
+    OK_GEU,
+    OK_GT,
+    OK_GTU,
+    OK_LE,
+    OK_LEU,
+    OK_LT,
+    OK_LTU,
+    OK_MOD,
+    OK_MODU,
+    OK_MUL,
+    OK_MULU,
+    OK_NE,
+    OK_SHL,
+    OK_SHRA,
+    OK_SHRL,
+  }
   public:
     WideningIntegerArithmetic(SelectionDAG &D):
       DAG(D), TLI(D.getTargetLoweringInfo()) {
@@ -38,6 +64,13 @@ class WideningIntegerArithmetic {
     AvailableSolutionsMap AvailableSolutions;
 
     using FillTypeSet = SmallSet<IntegerFillType, 4>;
+  
+    using triple = tuple<unsigned char, unsigned char, unsigned char>;
+    using WidthsSet = SmallVector<triple>
+    using OperatorWidthsMap = DenseMap<OperatorKind, WidthsSet>;
+    using TargetWidthsMap = DenseMap<String, OperatorWidthsMap>
+    TargetWidthsMap TargetWidths;
+    void initTargetWidthTables();
  
     SDValue visit_widening(SDNode *Node);
     SDValue visitInstruction(SDNode *Node);
@@ -287,18 +320,19 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::findAllSolutions(
   return NULL;
 } 
     
-
+// Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitBINOP(
                           WideningIntegerSolutionInfo *BinOperator,
                           WideningIntegerSolutionInfo *LeftSol,
                           WideningIntegerSolutionInfo *RightSol){
   unsigned opc = BinOperator->getOpcode();
-  unsigned newWidth = // TODO need to check what width is available for
+  unsigned char newWidth = // TODO need to check what width is available for
                       // this Target of this Binary operator of the form
                       // width1 x width2 = newWidth
                       // for example on rv64 we have addw
                       // that is of the form i32 x i32 -> i32 
                       // and stored in a sign extended format to i64
+  unsigned char FillTypeWidth; // TODO get it from target 
   WideningIntegerSolutionInfo *Binop = new WIA_BINOP(opc,
     ExtensionChoice, BinOperator->getWidth(), newWidth, 
     BinOperator->getCost() + 1);
@@ -311,53 +345,85 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitFILL(
                           WideningIntegerSolutionInfo *Sol){
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
+  // TODO check if targets support this how to check??
+  // target must have sxlo(w->w') or just add appropriate instructions
+
+  if(Sol->getFillType() != ANYTHING){
+    return NULL;
+  }
+   
+  // Results to a truncate
   WideningIntegerSolutionInfo *Fill = new WIA_FILL(
-    ExtensionOpc, Sol->getFillType(), Sol->getWidth(),
+    ExtensionOpc, ExtensionChoice, Sol->getFillTypeWidth(), Sol->getWidth(),
     64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
-  addOperand(Sol);
+  Fill->addOperand(Sol);
   return Fill; 
 }
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN(
                           WideningIntegerSolutionInfo *Sol){
-
+  
+  if(Sol->getFillType() == ANYTHING){
+    return NULL;
+  }
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
+  // Results to a widened
   WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
-    ExtensionOpc, Sol->getFillType(), Sol->getWidth(),
+    ExtensionOpc, ExtensionChoice, Sol->getFillTypeWidth(), Sol->getWidth(),
     64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
-  addOperand(Sol);
-  return Fill; 
+  Widen->addOperand(Sol);
+  return Widen; 
 }
     
 
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       WideningIntegerSolutionInfo *Sol){
-  return NULL;
+ 
+  if(Sol->getFillType() != ANYTHING){
+    return NULL;
+  } 
+  unsigned ExtensionOpc = ISD::ANY_EXTEND  // Results to a garbage widened
+  WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
+    ExtensionOpc, ExtensionChoice, Sol->getFillTypeWidth(), 
+    Sol->getWidth(),
+    64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
+  GarbageWiden->addOperand(Sol);
+  return GarbageWiden; 
 }
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNARROW(
                           WideningIntegerSolutionInfo *Sol){
+  // Not sure the kinds of truncate of the Target will determine it.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
+  
+  // Check truncate size for Machine
+  // for example rv64 has zext for truncate
+  // or store 32 
+  // Narrowing on targets how they are implemented?? 
   WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
-    , Sol->getFillType(), Sol->getWidth(),
+    // Will depend on available Narrowing , 
+    Sol->getFillTypeWidth(), Sol->getWidth(),
     64/* TODO get Trunc Size */, Sol->getCost() + 1 );
-  addOperand(Sol);
+  Trunc->addOperand(Sol);
   return Trunc; 
 }
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_EXT(
                           WideningIntegerSolutionInfo *Sol){
+  
+  if(Sol->getFillType() == ANYTHING){
+    return NULL;
+  }
   // SExt or ZExt have only 1 operand
   WideningIntegerSolutionInfo *N0 = 
-                      Sol->getOperands().begin()->second;
-  unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
-                                                    ISD::ZERO_EXTEND;
+                      *(Sol->getOperands().begin());
+  unsigned ExprOpc = N0->getOpcode();
   // We simply drop the extension and we will later see if it's needed.
-  WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(ExtensionOpc,
-    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
-    N0->getCost());
+  WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(ExtOpc,
+    N0->getFillType(), N0->getFillTypeWidth(), N0->getWidth(), 
+    N0->getUpdatedWidth(), N0->getCost());
   Expr->setOperands(N0->getOperands());
 
 }
@@ -367,15 +433,16 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_EXT(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_COPY(
                           WideningIntegerSolutionInfo *Sol){
   // TRUNCATE has only 1 operand
-  WideningIntegerSolutionInfo *N0 = 
-                Sol->getOperands().begin()->second;
-  
+  WideningIntegerSolutionInfo *N0 = *(Sol->getOperands().begin());
+
+  // Any FillType is fine so we don't need to check  
+
   // We simply drop the truncation and we will later see if it's needed.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOCOPY(ExtensionOpc,
-    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
-    N0->getCost());
+    N0->getFillType(), N0->getFillTypeWidth(), N0->getWidth(), 
+    N0->getUpdatedWidth(), N0->getCost());
   Expr->setOperands(N0->getOperands());
   return Expr;
 }
@@ -387,12 +454,13 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_IGNORE(
   WideningIntegerSolutionInfo *N0 = 
                 Sol->getOperands().begin()->second;
   
+  unsigned char FillTypeWidth = // TODO  
   // We simply drop the truncation and we will later see if it's needed.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOIGNORE(ExtensionOpc,
-    N0->getFillType(), N0->getWidth(), N0->getUpdatedWidth(),
-    N0->getCost());
+    N0->getFillType(), FillTypeWidth, N0->getWidth(), 
+    N0->getUpdatedWidth(), N0->getCost());
   Expr->setOperands(N0->getOperands());
   return Expr;
 }
@@ -403,9 +471,19 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitEXTLO(
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
+  unsigned newOldWidth = 
   unsigned OldWidth, NewWidth; // TODO how to calculate OldWidth and NewWidth?
-  WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(ExtensionOpc,
-    ExtensionChoice, OldWidth, NewWidth, cost); 
+  // TODO check that LeftSol->getWidth == RightSol->getWidth &&
+  // TODO check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
+  // TODO check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
+  if(LeftSol->getWidth() != RightSol->getWidth() || 
+     LeftSol->getFillTypeWidth() != RightSol->getFillTypeWidth() ||
+     (LeftSol->getFillType() != ZEROS && RightSol->getFillType() != ANYTHING){
+    return NULL;
+  }
+  
+  WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(ExtensionOpc,k
+    ExtensionChoice, LeftSol->getFillTypeWidth(), OldWidth, NewWidth, cost); 
   
   return Expr; 
 
@@ -415,8 +493,8 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitEXTLO(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_FILL(
                           WideningIntegerSolutionInfo *Sol){
   WideningIntegerSolutionInfo *Expr = new WIA_SUBSUME_FILL(
-    ISD::ANY_EXTEND, ANYTHING, Sol->getWidth(), Sol->getUpdatedWidth(),
-    Sol->getCost());
+    ISD::ANY_EXTEND, ANYTHING, Sol->getFillTypeWidth(), Sol->getWidth(),
+     Sol->getUpdatedWidth(), Sol->getCost());
   return Expr;
 
 }
@@ -439,12 +517,36 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNATURAL(
                                                     ISD::ZERO_EXTEND;
   
   WideningIntegerSolutionInfo *Expr = new WIA_NATURAL(
-    ExtensionOpc, ExtensionChoice , Sol->getWidth(), Sol->getUpdatedWidth(),
-    Sol->getCost());
+    ExtensionOpc, ExtensionChoice , Sol->getFillTypeWidth(), 
+    Sol->getWidth(), Sol->getUpdatedWidth(), Sol->getCost());
   return Expr;
 
 }
 
 
+
+void WideningIntegerArithmetic::initTargetWidthTables(){
+    using triple = tuple<unsigned char, unsigned char, unsigned char>;
+    using WidthsSet = SmallVector<triple>
+    using OperatorWidthsMap = DenseMap<OperatorKind, WidthsSet>;
+    using TargetWidthsMap = DenseMap<String, OperatorWidthsMap>
+    TargetWidthsMap TargetWidths;
+  
+  
+    OperatorWidthsMap RISCVOpsMap, ARMOpsMap, X86OpsMap;
+    WidthsSet RISCVAdd, ARMAdd, X86Add;
+    
+    RISCVAdd.insert(make_tuple(32, 32,32));
+    RISCVAdd.insert(make_tuple(64, 64, 64));
+    
+    ARMAdd.insert(make_tuple(32, 32, 32));
+    ARMAdd.insert(make_tuple(64, 64, 64));
+    ARMAdd.insert(make_tuple(64, 32, 64)) // zero extends 32 bit internally
+    X86Add.insert(make_tuple(64, 64, 64));
+    X86Add.insert(make_tuple(32, 32, 32));
+    X86Add.insert(make_tuple(16, 16, 16));
+    X86Add.insert(make_tuple(8, 8, 8));
+    
+}
 
 
