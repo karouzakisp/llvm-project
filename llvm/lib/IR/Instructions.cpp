@@ -3762,10 +3762,10 @@ CastInst::castIsValid(Instruction::CastOps op, Type *SrcTy, Type *DstTy) {
   case Instruction::Trunc:
     return SrcTy->isIntOrIntVectorTy() && DstTy->isIntOrIntVectorTy() &&
            SrcEC == DstEC && SrcScalarBitSize > DstScalarBitSize;
-  case Instruction::ZExt:
+  case Instruction::ZExt: 
     return SrcTy->isIntOrIntVectorTy() && DstTy->isIntOrIntVectorTy() &&
-           SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
-  case Instruction::SExt:
+           SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize; 
+  case Instruction::SExt: 
     return SrcTy->isIntOrIntVectorTy() && DstTy->isIntOrIntVectorTy() &&
            SrcEC == DstEC && SrcScalarBitSize < DstScalarBitSize;
   case Instruction::FPTrunc:

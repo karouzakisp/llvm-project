@@ -102,7 +102,8 @@ extern FunctionSummary::ForceSummaryHotnessType ForceSummaryEdgesCold;
 namespace {
 
 /// These are manifest constants used by the bitcode writer. They do not need to
-/// be kept in sync with the reader, but need to be consistent within this file.
+/// // TODO add zext be kept in sync with the reader, but need to be consistent
+/// within this file.
 enum {
   // VALUE_SYMTAB_BLOCK abbrev id's.
   VST_ENTRY_8_ABBREV = bitc::FIRST_APPLICATION_ABBREV,
@@ -114,6 +115,7 @@ enum {
   CONSTANTS_SETTYPE_ABBREV = bitc::FIRST_APPLICATION_ABBREV,
   CONSTANTS_INTEGER_ABBREV,
   CONSTANTS_CE_CAST_Abbrev,
+  CONSTANTS_CE_CAST_FLAGS_ABBREV,
   CONSTANTS_NULL_Abbrev,
 
   // FUNCTION_BLOCK abbrev id's.
@@ -123,6 +125,7 @@ enum {
   FUNCTION_INST_BINOP_ABBREV,
   FUNCTION_INST_BINOP_FLAGS_ABBREV,
   FUNCTION_INST_CAST_ABBREV,
+  FUNCTION_INST_CAST_FLAGS_ABBREV,
   FUNCTION_INST_RET_VOID_ABBREV,
   FUNCTION_INST_RET_VAL_ABBREV,
   FUNCTION_INST_UNREACHABLE_ABBREV,
@@ -1551,8 +1554,11 @@ static uint64_t getOptimizationFlags(const Value *V) {
       Flags |= bitc::AllowContract;
     if (FPMO->hasApproxFunc())
       Flags |= bitc::ApproxFunc;
+  } else if (const auto *NNO = dyn_cast<NonNegOperator>(V)) {
+    if (NNO->hasNonNeg()) {
+      Flags |= 1 << bitc::NNO_NON_NEG;
+    }
   }
-
   return Flags;
 }
 
@@ -2647,6 +2653,11 @@ void ModuleBitcodeWriter::writeConstants(unsigned FirstVal, unsigned LastVal,
           Record.push_back(VE.getTypeID(C->getOperand(0)->getType()));
           Record.push_back(VE.getValueID(C->getOperand(0)));
           AbbrevToUse = CONSTANTS_CE_CAST_Abbrev;
+          uint64_t Flags = getOptimizationFlags(CE);
+          if (Flags != 0) {
+            AbbrevToUse = CONSTANTS_CE_CAST_FLAGS_ABBREV;
+            Record.push_back(Flags);
+          }
         } else {
           assert(CE->getNumOperands() == 2 && "Unknown constant expr!");
           Code = bitc::CST_CODE_CE_BINOP;
@@ -2833,6 +2844,12 @@ void ModuleBitcodeWriter::writeInstruction(const Instruction &I,
         AbbrevToUse = FUNCTION_INST_CAST_ABBREV;
       Vals.push_back(VE.getTypeID(I.getType()));
       Vals.push_back(getEncodedCastOpcode(I.getOpcode()));
+      uint64_t Flags = getOptimizationFlags(&I);
+      if (Flags != 0) {
+        if (AbbrevToUse == FUNCTION_INST_CAST_ABBREV)
+          AbbrevToUse = FUNCTION_INST_CAST_FLAGS_ABBREV;
+        Vals.push_back(Flags);
+      }
     } else {
       assert(isa<BinaryOperator>(I) && "Unknown instruction!");
       Code = bitc::FUNC_CODE_INST_BINOP;
@@ -3568,6 +3585,17 @@ void ModuleBitcodeWriter::writeBlockInfo() {
         CONSTANTS_INTEGER_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
   }
+  { // CE_CAST abbrev for CONSTANTS_BLOCK.
+    auto Abbv = std::make_shared<BitCodeAbbrev>();
+    Abbv->Add(BitCodeAbbrevOp(bitc::CST_CODE_CE_CAST));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 4)); // cast opc
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed,      // typeid
+                              VE.computeBitsRequiredForTypeIndicies()));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 8)); // value id
+    if (Stream.EmitBlockInfoAbbrev(bitc::CONSTANTS_BLOCK_ID, Abbv) !=
+        CONSTANTS_CE_CAST_Abbrev)
+      llvm_unreachable("Unexpected abbrev ordering!");
+  }
 
   { // CE_CAST abbrev for CONSTANTS_BLOCK.
     auto Abbv = std::make_shared<BitCodeAbbrev>();
@@ -3576,9 +3604,10 @@ void ModuleBitcodeWriter::writeBlockInfo() {
     Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed,       // typeid
                               VE.computeBitsRequiredForTypeIndicies()));
     Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 8));    // value id
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 8));  // flags
 
     if (Stream.EmitBlockInfoAbbrev(bitc::CONSTANTS_BLOCK_ID, Abbv) !=
-        CONSTANTS_CE_CAST_Abbrev)
+        CONSTANTS_CE_CAST_FLAGS_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
   }
   { // NULL abbrev for CONSTANTS_BLOCK.
@@ -3643,7 +3672,7 @@ void ModuleBitcodeWriter::writeBlockInfo() {
         FUNCTION_INST_BINOP_FLAGS_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
   }
-  { // INST_CAST abbrev for FUNCTION_BLOCK.
+  { // INST_CAST abbrev for FUNCTION_BLOCK. TODO possible zext flag
     auto Abbv = std::make_shared<BitCodeAbbrev>();
     Abbv->Add(BitCodeAbbrevOp(bitc::FUNC_CODE_INST_CAST));
     Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));    // OpVal
@@ -3652,6 +3681,18 @@ void ModuleBitcodeWriter::writeBlockInfo() {
     Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 4));  // opc
     if (Stream.EmitBlockInfoAbbrev(bitc::FUNCTION_BLOCK_ID, Abbv) !=
         FUNCTION_INST_CAST_ABBREV)
+      llvm_unreachable("Unexpected abbrev ordering!");
+  }
+  { // INST_CAST FLAGS abbrev for FUNCTION_BLOCK. TODO possible zext flag
+    auto Abbv = std::make_shared<BitCodeAbbrev>();
+    Abbv->Add(BitCodeAbbrevOp(bitc::FUNC_CODE_INST_CAST));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // OpVal
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed,    // dest ty
+                              VE.computeBitsRequiredForTypeIndicies()));
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 4)); // opc
+    Abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 8)); // flags
+    if (Stream.EmitBlockInfoAbbrev(bitc::FUNCTION_BLOCK_ID, Abbv) !=
+        FUNCTION_INST_CAST_FLAGS_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
   }
 
