@@ -65,8 +65,8 @@ class WideningIntegerArithmetic {
 
     using FillTypeSet = SmallSet<IntegerFillType, 4>;
   
-    using triple = tuple<unsigned char, unsigned char, unsigned char>;
-    using WidthsSet = SmallVector<triple>
+    using BinOpWidth = tuple<unsigned char, unsigned char, unsigned char>;
+    using WidthsSet = SmallVector<BinOpWidth>
     using OperatorWidthsMap = DenseMap<OperatorKind, WidthsSet>;
     using TargetWidthsMap = DenseMap<String, OperatorWidthsMap>
     TargetWidthsMap TargetWidths;
@@ -88,6 +88,10 @@ SolutionSet rightSols, FillTypeSet operandFillTypes);
                              WideningIntegerSolutionInfo *rightSol, 
                              FillTypeSet OperandFillTypes);
 
+    inline bool hasTypeGarbage(IntegerFillType fill);
+    inline bool hasTypeT(IntegerFillType fill);
+    inline bool hasTypeS(IntegerFillType fill);
+    
     WideningIntegerSolutionInfo *findAllSolutions(
                       WideningIntegerSolutionInfo *Sol);    
     WideningIntegerSolutionInfo *visitBINOP(
@@ -347,8 +351,7 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitFILL(
                                                     ISD::ZERO_EXTEND;
   // TODO check if targets support this how to check??
   // target must have sxlo(w->w') or just add appropriate instructions
-
-  if(Sol->getFillType() != ANYTHING){
+  if(!hasTypeGarbage(Sol->getFillType()){
     return NULL;
   }
    
@@ -363,12 +366,12 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitFILL(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN(
                           WideningIntegerSolutionInfo *Sol){
   
-  if(Sol->getFillType() == ANYTHING){
-    return NULL;
-  }
+  if(!hasTypeS(Sol->getFillType())
+    return NULL; 
+ 
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
-  // Results to a widened
+  // Results to a widened expr
   WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
     ExtensionOpc, ExtensionChoice, Sol->getFillTypeWidth(), Sol->getWidth(),
     64/* TODO get TARGET WIDTH */, Sol->getCost() + 1 );
@@ -380,9 +383,8 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       WideningIntegerSolutionInfo *Sol){
  
-  if(Sol->getFillType() != ANYTHING){
-    return NULL;
-  } 
+  if(!hasTypeGarbage(Sol->getFillType());
+
   unsigned ExtensionOpc = ISD::ANY_EXTEND  // Results to a garbage widened
   WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
     ExtensionOpc, ExtensionChoice, Sol->getFillTypeWidth(), 
@@ -394,10 +396,16 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitWIDEN_GARBAGE(
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNARROW(
                           WideningIntegerSolutionInfo *Sol){
+  
+
+  if(!hasTypeT(Sol->getFillType())
+    return NULL;  
+
+  // TODO check isTruncateFree on some targets and widths.
   // Not sure the kinds of truncate of the Target will determine it.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
-  
+    
   // Check truncate size for Machine
   // for example rv64 has zext for truncate
   // or store 32 
@@ -413,9 +421,9 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNARROW(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_EXT(
                           WideningIntegerSolutionInfo *Sol){
   
-  if(Sol->getFillType() == ANYTHING){
+  if(!hasTypeS(Sol->getFillType()))
     return NULL;
-  }
+  
   // SExt or ZExt have only 1 operand
   WideningIntegerSolutionInfo *N0 = 
                       *(Sol->getOperands().begin());
@@ -435,7 +443,8 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_COPY(
   // TRUNCATE has only 1 operand
   WideningIntegerSolutionInfo *N0 = *(Sol->getOperands().begin());
 
-  // Any FillType is fine so we don't need to check  
+  if(!hasTypeT(Sol->getFillType()))
+    return NULL;
 
   // We simply drop the truncation and we will later see if it's needed.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
@@ -450,11 +459,14 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_COPY(
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitDROP_LO_IGNORE(
                           WideningIntegerSolutionInfo *Sol){
   
+  if(!hasTypeT(Sol->getFillType()))
+    return NULL;
+  
   // TRUNCATE has only 1 operand
   WideningIntegerSolutionInfo *N0 = 
                 Sol->getOperands().begin()->second;
   
-  unsigned char FillTypeWidth = // TODO  
+  unsigned char FillTypeWidth = // TODO we find it? 
   // We simply drop the truncation and we will later see if it's needed.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
@@ -472,13 +484,15 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitEXTLO(
                                                     ISD::ZERO_EXTEND;
   unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
   unsigned newOldWidth = 
-  unsigned OldWidth, NewWidth; // TODO how to calculate OldWidth and NewWidth?
-  // TODO check that LeftSol->getWidth == RightSol->getWidth &&
-  // TODO check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
-  // TODO check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
+  unsigned OldWidth, NewWidth; // TODO how to calculate OldWidth and NewWidth??
+  OldWidth = LeftSol->getWidth();
+  newWidth = 0; // TODO check
+  // check that LeftSol->getWidth == RightSol->getWidth &&
+  // check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
+  // check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
   if(LeftSol->getWidth() != RightSol->getWidth() || 
      LeftSol->getFillTypeWidth() != RightSol->getFillTypeWidth() ||
-     (LeftSol->getFillType() != ZEROS && RightSol->getFillType() != ANYTHING){
+     (LeftSol->getFillType() != ZEROS && hasTypeGarbage(RightSol->getFillType()) ){
     return NULL;
   }
   
@@ -492,11 +506,7 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitEXTLO(
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_FILL(
                           WideningIntegerSolutionInfo *Sol){
-  WideningIntegerSolutionInfo *Expr = new WIA_SUBSUME_FILL(
-    ISD::ANY_EXTEND, ANYTHING, Sol->getFillTypeWidth(), Sol->getWidth(),
-     Sol->getUpdatedWidth(), Sol->getCost());
-  return Expr;
-
+  return NULL;
 }
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_INDEX(
@@ -512,7 +522,9 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitSUBSUME_INDEX(
     
 WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNATURAL(
                           WideningIntegerSolutionInfo *Sol){
-  
+ 
+  if(!hasTypeGarbage(Sol->getFillType())
+    return NULL; 
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   
@@ -526,11 +538,7 @@ WideningIntegerSolutionInfo* WideningIntegerArithmetic::visitNATURAL(
 
 
 void WideningIntegerArithmetic::initTargetWidthTables(){
-    using triple = tuple<unsigned char, unsigned char, unsigned char>;
-    using WidthsSet = SmallVector<triple>
-    using OperatorWidthsMap = DenseMap<OperatorKind, WidthsSet>;
-    using TargetWidthsMap = DenseMap<String, OperatorWidthsMap>
-    TargetWidthsMap TargetWidths;
+    
   
   
     OperatorWidthsMap RISCVOpsMap, ARMOpsMap, X86OpsMap;
@@ -548,5 +556,35 @@ void WideningIntegerArithmetic::initTargetWidthTables(){
     X86Add.insert(make_tuple(8, 8, 8));
     
 }
+
+
+    
+inline bool WideningIntegerArithmetic::hasTypeGarbage(IntegerFillType fill){
+  
+  if(fill != ANYTHING && fill != ZEROS && fill != ZEROS){
+    return 0;
+  }
+  return 1;
+
+
+}
+  
+inline bool WideningIntegerArithmetic::hasTypeT(IntegerFillType fill){
+  return hasTypeGarbage(fill);
+}
+
+inline bool WideningIntegerArithmetic::hasTypeS(IntegerFillType fill){
+  if(fill != ANYTHING && fill != ZEROS && fill != ZEROS){
+    return 0;
+  }
+  return 1;
+
+}
+
+
+
+
+
+
 
 
