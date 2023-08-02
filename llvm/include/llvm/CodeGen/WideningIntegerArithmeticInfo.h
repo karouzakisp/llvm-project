@@ -15,6 +15,7 @@ enum IntegerFillType{
   SIGN = 0,
   ZEROS,
   ANYTHING,
+  UNDEFINED
 };
 
 
