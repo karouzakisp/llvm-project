@@ -4,7 +4,7 @@
 
 #include "llvm/IR/Instruction.h"
 #include "llvm/ADT/SmallPtrSet.h"
-
+#include "llvm/CodeGen/SelectionDAGNodes.h"
 
 namespace llvm {
 
@@ -23,6 +23,7 @@ enum IntegerFillType{
 // This class is used to specify all the arguments that a solution
 // of WideningIntegerArithmetic class requires.
 class WideningIntegerSolutionInfo{
+
 public:
 
   enum WIAKind{
@@ -37,26 +38,50 @@ public:
     WIAK_EXTLO,
     WIAK_SUBSUME_FILL,
     WIAK_SUBSUME_INDEX,
-    WIAK_NATURAL
+    WIAK_NATURAL,
+    WIAK_ASSIGN,
+    WIAK_VAR,
+    WIAK_LIT,
   };
+
+protected:
+  // We care only about integer arithmetic instructions
+  unsigned       Opcode;
+  // Fill type for the upper bits of the expression
+  // can be zero, one or garbage
+  IntegerFillType   FillType; // τ
+  unsigned char     FillTypeWidth; // n τ[n]
+  // The current width of the instruction's destination operand
+  unsigned char     Width;        // w
+  // The updated width of the instruction's destination operand
+  unsigned char     UpdatedWidth;
+  // The cost of the solution
+  short int         Cost;
+  // Pointer to the SDNode that mapped to this solutionInfo
+  SDNode            *Node;
+private:  
+  WIAKind Kind;
+  // TODO can a SDNode have more than 4 Operands? 
+  SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
+public:
 
   WideningIntegerSolutionInfo() {}
   WideningIntegerSolutionInfo(WIAKind Kind_): Kind(Kind_) {} 
   WideningIntegerSolutionInfo(unsigned char Opcode_, IntegerFillType FillType_,
   unsigned FillTypeWidth_, unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_, WIAKind Kind_): 
-  Width(Width_), FillType(FillType_), FillTypeWidth(FillTypeWidth_), 
+    short int Cost_, WIAKind Kind_, SDNode* Node_): 
+  Opcode(Opcode_),  FillType(FillType_), 
+  FillTypeWidth(FillTypeWidth_), Width(Width_),
   UpdatedWidth(UpdatedWidth_),
-  Cost(Cost_), Opcode(Opcode_), Kind(Kind_) {}
+  Cost(Cost_), Node(Node_), Kind(Kind_) {}
  
   WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &other)
-  : Width(other.getWidth()), FillType(other.getFillType()),
-    FillTypeWidth(other.getFillTypeWidth()), 
+  : Opcode(other.getOpcode()), FillType(other.getFillType()),
+    FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
     UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
-    Opcode(other.getOpcode()), Kind(other.getKind()) 
-  {
-    setOperands(other.getOperands());
-  }  
+    Node(other.getNode()) , Kind(other.getKind()),
+    Operands(other.getOperands()) {}
+   
  
   virtual inline bool operator==(const WideningIntegerSolutionInfo &a) = 0; 
 
@@ -68,12 +93,6 @@ public:
     Opcode = Opcode_;
   }  
 
-  unsigned getUpdatedOpcode(void) const {
-    return UpdatedOpcode;
-  }
-  void setUpdatedOpcode(unsigned UpdatedOpcode_){
-    UpdatedOpcode = UpdatedOpcode_;
-  }  
   
   short int getCost(void) const {
     return Cost;
@@ -116,6 +135,10 @@ public:
   void addOperand(WideningIntegerSolutionInfo *Sol){
     Operands.insert(Sol);
   }
+
+  WideningIntegerSolutionInfo* getOperand(short int i){
+    return NULL;
+  }
   
   unsigned  getFillTypeWidth(void) const {
     return FillTypeWidth;
@@ -123,6 +146,14 @@ public:
 
   void setFillTypeWidth(unsigned FillType_){
     FillTypeWidth = FillType_;
+  }
+
+  void setNode(SDNode *Node_){
+    Node = Node_;
+  }
+  
+  SDNode* getNode(void) const {
+    return Node;
   }
  
   // Returns 0 if no one is redudant
@@ -144,35 +175,6 @@ public:
     return 0; 
   }
 
-protected:
-  
-
-  // We care only about integer arithmetic instructions
-  unsigned       Opcode;
-  
-  // Fill type for the upper bits of the expression
-  // can be zero, one or garbage
-  IntegerFillType   FillType; // τ
-
-  unsigned char     FillTypeWidth; // n τ[n]
-
-  // The current width of the instruction's destination operand
-  unsigned char     Width;        // w
-
-  // The updated width of the instruction's destination operand
-  unsigned char     UpdatedWidth;
-  
-  // The cost of the solution
-  short int         Cost;
-
-  
-  // The updated instruction if we add an extension
-  unsigned       UpdatedOpcode;
-  
-private:  
-  WIAKind Kind;
-  // TODO can a SDNode have more than 4 Operands? 
-  SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
 }; // WideningIntegerSolutionInfo
 
 
@@ -184,10 +186,10 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
   WIA_BINOP(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_, 
-        WIAK_BINOP) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_BINOP, Node_) {}
   
   static inline bool classof(WIA_BINOP const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -216,10 +218,10 @@ class WIA_FILL : public WideningIntegerSolutionInfo
   WIA_FILL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_FILL) {} 
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_FILL, Node_) {} 
 
   static inline bool classof(WIA_FILL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -242,10 +244,10 @@ class WIA_WIDEN : public WideningIntegerSolutionInfo
   WIA_WIDEN(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_, 
-        WIAK_WIDEN) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_WIDEN, Node_) {}
   
   static inline bool classof(WIA_WIDEN const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -269,10 +271,10 @@ class WIA_WIDEN_GARBAGE : public WideningIntegerSolutionInfo
   WIA_WIDEN_GARBAGE(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_WIDEN_GARBAGE) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_WIDEN_GARBAGE, Node_ ) {}
 
   static inline bool classof(WIA_WIDEN_GARBAGE const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -295,10 +297,10 @@ class WIA_NARROW : public WideningIntegerSolutionInfo
   WIA_NARROW(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_ , FillTypeWidth , Width_, UpdatedWidth_, Cost_,
-        WIAK_NARROW) {}
+        Opcode_, FillType_ , FillTypeWidth , Width_, 
+        UpdatedWidth_, Cost_, WIAK_NARROW, Node_){}
 
   static inline bool classof(WIA_NARROW const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -322,10 +324,10 @@ class WIA_DROP_EXT : public WideningIntegerSolutionInfo
   WIA_DROP_EXT(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_DROP_EXT) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_DROP_EXT, Node_) {}
 
   static inline bool classof(WIA_DROP_EXT const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -349,10 +351,10 @@ class WIA_DROP_LOCOPY : public WideningIntegerSolutionInfo
   WIA_DROP_LOCOPY(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_, 
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_DROP_LOCOPY) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_,
+        UpdatedWidth_, Cost_, WIAK_DROP_LOCOPY, Node_) {}
 
   static inline bool classof(WIA_DROP_LOCOPY const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -376,10 +378,10 @@ class WIA_DROP_LOIGNORE : public WideningIntegerSolutionInfo
   WIA_DROP_LOIGNORE(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_DROP_LOIGNORE) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_DROP_LOIGNORE,Node_) {}
 
   static inline bool classof(WIA_DROP_LOIGNORE const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -403,10 +405,10 @@ class WIA_EXTLO : public WideningIntegerSolutionInfo
   WIA_EXTLO(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_EXTLO) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_EXTLO, Node_) {}
 
   static inline bool classof(WIA_EXTLO const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -430,10 +432,10 @@ class WIA_SUBSUME_FILL : public WideningIntegerSolutionInfo
   WIA_SUBSUME_FILL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_,
-        WIAK_SUBSUME_FILL) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_SUBSUME_FILL, Node_) {}
 
   static inline bool classof(WIA_SUBSUME_FILL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -457,9 +459,10 @@ class WIA_SUBSUME_INDEX : public WideningIntegerSolutionInfo
   WIA_SUBSUME_INDEX(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_, WIAKind id = WIAK_SUBSUME_INDEX): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_, id) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_SUBSUME_INDEX, Node_) {}
 
   static inline bool classof(WIA_SUBSUME_INDEX const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -483,9 +486,10 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   WIA_NATURAL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned char FillTypeWidth_,
             unsigned char Width_, unsigned char UpdatedWidth_, 
-            short int Cost_): 
+            short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_, FillTypeWidth_, Width_, UpdatedWidth_, Cost_, WIAK_NATURAL) {}
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_NATURAL, Node_) {}
 
   static inline bool classof(WIA_NATURAL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
