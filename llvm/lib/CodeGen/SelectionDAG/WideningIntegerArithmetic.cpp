@@ -72,8 +72,8 @@ class WideningIntegerArithmetic {
     enum IntegerFillType ExtensionChoice;   
  
     // checks whether a SDNode in the DAG is visited and solved` 
-    isSolvedMap solvedNodes;
-    
+    isSolvedMap solvedNodes; 
+    bool IsSolved(SolutionType Node);
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -92,13 +92,13 @@ class WideningIntegerArithmetic {
 
     SmallVector<WideningIntegerSolutionInfo *> visit_widening(SDNode *Node);
     SolutionSet visitInstruction(SolutionType Node);
-    SolutionSet visitANY_EXT_OR_TRUNC(SDNode *Node);
+    SolutionSet visitANY_EXT_OR_TRUNC(SolutionType Node);
     SolutionSet visitXOR(SDNode *Node);
     SolutionSet visitADD(SDNode *Node);
     SolutionSet visitADDO(SDNode *Node);
 
 
-    FillTypeSet getOperandFillTypes(SolutionType Sol);
+    FillTypeSet getOperandFillTypes(SDNode *Node);
   
     void setFillType(EVT SrcVt, EVT DstVT);  
     bool isInteger(SDNode *Node);
@@ -131,11 +131,15 @@ class WideningIntegerArithmetic {
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
 
-    WIAKind getNodeKind(SDNode *Node);
+    WideningIntegerSolutionInfo::WIAKind getNodeKind(SDNode *Node);
     bool IsBINOP(unsigned Opcode);
     bool IsTruncate(unsigned Opcode);
-    bool isExtension(unsigned Opcode);
+    bool IsExtension(unsigned Opcode);
     bool IsAssign(unsigned Opcode);
+    bool IsLit(unsigned Opcode);
+  
+    SolutionType NodeToSolutionType(SDNode *Node, int cost);
+    IntegerFillType findFillType(unsigned Opcode);
      
 };
 
@@ -173,31 +177,31 @@ bool WideningIntegerArithmetic::IsBINOP(unsigned Opcode){
     case ISD::MULHS:             
     case ISD::AND:
     case ISD::OR:
-    case ISD::XOR:      return True;
+    case ISD::XOR:      return true;
     
   }
 }
 
-bool IsTruncate(unsigned Opcode){
-  switch(Node->getOpcode()){
+bool WideningIntegerArithmetic::IsTruncate(unsigned Opcode){
+  switch(Opcode){
     default: break;
-    case ISD::TRUNCATE return true;
+    case ISD::TRUNCATE: return true;
   }
   return false;
 }
 
-bool isExtension(unsigned Opcode){
-  switch(Node->getOpcode()){
+bool WideningIntegerArithmetic::IsExtension(unsigned Opcode){
+  switch(Opcode){
     default: break;
     case ISD::SIGN_EXTEND:
     case ISD::ZERO_EXTEND:      
     case ISD::AssertSext:                 // TODO check we need to drop those extensions or not?
     case ISD::AssertZext:       return true;
-
+  }
   
 }
 
-bool IsAssign(unsigned Opcode){
+bool WideningIntegerArithmetic::IsAssign(unsigned Opcode){
   switch(Opcode){
     default: break;
     case ISD::STORE:                      // TODO we need more?
@@ -206,22 +210,23 @@ bool IsAssign(unsigned Opcode){
   return false;
 }
 
-bool isLit(unsigned Opcode){
+bool WideningIntegerArithmetic::IsLit(unsigned Opcode){
   switch(Opcode){
     default: break;
-    case ISD::Constant return true; 
+    case ISD::Constant: return true; 
   }
   return false;
 }
 
-WideningIntegerSolutionInfo::WIAKind getNodeKind(SDNode *Node){
+WideningIntegerSolutionInfo::WIAKind 
+WideningIntegerArithmetic::getNodeKind(SDNode *Node){
   unsigned Opcode = Node->getOpcode();
   if(IsBINOP(Opcode))
-    return WIAK_BINOP;
+    return WideningIntegerSolutionInfo::WIAK_BINOP;
   else if(IsExtension(Opcode))
-    return WIAK_DROP_EXT;
-  else if(IsTRUNCATE(Opcode))
-    return WIAK_DROP_LOCOPY;
+    return WideningIntegerSolutionInfo::WIAK_DROP_EXT;
+  else if(IsTruncate(Opcode))
+    return WideningIntegerSolutionInfo::WIAK_DROP_LOCOPY;
 }
 
 
@@ -241,14 +246,15 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
 
 
 WideningIntegerArithmetic::SolutionType
-NodeToSolutionType(SDNode *Node, int cost){
+WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node, int cost){
   
   unsigned char Width = Node->getValueType(0).getSizeInBits(); 
   unsigned char FillTypeWidth = 64 - Width; // TODO CHECK TARGET WIDTH
-                                                                            // TODO same as 1 from above.
-  auto Sol = new WideningIntegerSolutionInfo(Node->getOpcode(),
+
+  // TODO use Factory Method here to distiguinsh class constructor based on Opcode
+  auto Sol = new WIA_BINOP(Node->getOpcode(),
                   findFillType(Node->getOpcode()), FillTypeWidth,
-                  Width, /* UpdatedWidth */ 0, cost, getNodeKind(Node);
+                  Width, /* UpdatedWidth */ 0, cost, Node);
   return Sol;
 }
 
@@ -268,6 +274,7 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   auto Sol = NodeToSolutionType(Node, cost);                         
   
   auto CalcSolutions = visitInstruction(Sol);
+  solvedNodes[Node->getNodeId()] = true; 
   cost = 1;
   return CalcSolutions;
 }
@@ -330,7 +337,7 @@ WideningIntegerArithmetic::visitXOR(SDNode *Node ){
 
 
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitANY_EXT_OR_TRUNC(SDNode *Node){
+WideningIntegerArithmetic::visitANY_EXT_OR_TRUNC(SolutionType Node){
   SolutionSet set;
  
   // TODO convert node to Set of WideningSolutionInfo's 
@@ -378,13 +385,12 @@ bool WideningIntegerArithmetic::isInteger(SDNode *Node){
 
 // Checks whether a SDNode is visited 
 // so we don't visit and solve the same Node again
-bool WideningIntegerArithmetic::isSolved(SDNode *Node){
-  auto isVisited = solvedNodes.find(Node->getNodeId());
-  if(isVisited == solvedNodes.end())
-    return false;
-  else
-    return true; 
-  return true;
+bool WideningIntegerArithmetic::IsSolved(SolutionType Sol){
+  auto isVisited = solvedNodes.find(Sol->getNode()->getNodeId());
+  if(isVisited != solvedNodes.end())
+    return true;
+  
+  return false;
 }
 
 
@@ -413,24 +419,25 @@ WideningIntegerArithmetic::closure(SolutionSet Sols){
 
 inline 
 WideningIntegerArithmetic::FillTypeSet 
-WideningIntegerArithmetic::getOperandFillTypes(SolutionType Sol){
+WideningIntegerArithmetic::getOperandFillTypes(SDNode *Node){
 
   FillTypeSet Set;
-  switch(Sol->getOpcode()){
+  unsigned Opcode = Node->getOpcode();
+  switch(Opcode){
     case (ISD::ADD):
     case (ISD::SADDO):{
       Set.insert(std::make_tuple(ANYTHING, ANYTHING, ANYTHING));
-      bool IsSigned = (ISD::SADDO == Sol->getOpcode());
+      bool IsSigned = (ISD::SADDO == Opcode);
       
 
       // TODO check if it overflows based on ISD::ADD
       // and if it does not for sure we can add SIGN AND ZEROS ?
       if(!IsSigned){
-        auto N0 = Sol->getOperand(0);
-        auto N1 = Sol->getOperand(1);
+        auto N0 = Node->getOperand(0);
+        auto N1 = Node->getOperand(1);
         if(DAG.computeOverflowKind(N0, N1 ) == SelectionDAG::OFK_Never){
-          Set.insert(std::make_tuple(SIGN, SIGN, SIGN);
-          Set.insert(std::make_tuple(ZEROS, ZEROS, ZEROS);
+          Set.insert(std::make_tuple(SIGN, SIGN, SIGN));
+          Set.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
         }
       }
 
@@ -448,20 +455,16 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
   SolutionType N0 = Node->getOperand(0);
   SolutionType N1 = Node->getOperand(1);
 
-  if(!isSolved(N0))
-    visitInstruction(N0);
-  if(!isSolved(N1))
-    visitInstruction(N1);
 
 
   // get All the available solutions from nodes 
   SolutionSet LeftSols = 
-      AvailableSolutions.find(N0->getNode()->get)->second;
+      AvailableSolutions.find(N0->getNode()->getNodeId())->second;
   SolutionSet  RightSols = 
-      AvailableSolutions.find(N1->getNodeId())->second;
+      AvailableSolutions.find(N1->getNode()->getNodeId())->second;
   // A function that combines solutions from operands left and right
   auto combineBinOp = [&](SDNode *Node, auto SolsLeft, auto SolsRight){    
-    FillTypeSet OperandFillTypes = getOperandFillTypes(Node->getOpcode());
+    FillTypeSet OperandFillTypes = getOperandFillTypes(Node);
     for (auto leftSolution : SolsLeft){
       for(auto rightSolution : SolsRight){
         // Test whether current binary operator has the available
@@ -475,9 +478,10 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
         unsigned char Cost = leftSolution->getCost() + rightSolution->getCost();
         unsigned char w1 = leftSolution->getUpdatedWidth();
         unsigned char w2 = rightSolution->getUpdatedWidth();
-        unsigned char w = // get width from target 
+        unsigned char FillTypeWidth = 32 // TODO get width from target
+        unsigned char UpdatedWidth = 64 // TODO 
         auto Sol = new WIA_BINOP(Opcode, 
-          FillType, NewWidth, NewWidth, Cost, Node->getNodeId());
+          FillType, FillTypeWidth, Node->getWidth(), UpdatedWidth, Cost, Node->getNodeId());
 
         AvailableSolutions[NodeId].push_back(Sol); 
           
@@ -802,6 +806,14 @@ void WideningIntegerArithmetic::initTargetWidthTables(){
     ARMOpsMap[ISD::ADD].push_back(ARMAdd);
     
     X86OpsMap[ISD::ADD].push_back(X86Add); 
+}
+
+WideningIntegerArithmetic::IntegerFillType findFillType(unsigned Opcode){
+
+
+  return SIGN;
+
+
 }
 
 void WideningIntegerArithmetic::initOperatorsFillTypes(){
