@@ -121,7 +121,10 @@ public:
   void setUpdatedWidth(unsigned char UpdatedWidth_){
     UpdatedWidth = UpdatedWidth_;
   }
-  
+ 
+  WIAKind setKind(WIAKind Kind_){
+    Kind = Kind_;
+  } 
   WIAKind getKind() const {
     return Kind;
   }
@@ -504,6 +507,42 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   }
 };
 
+
+class WideningIntegerSolInfoBuilder {
+  public:
+  WideningIntegerSolutionInfo* build(WIAKind Kind){
+    switch(Kind){
+      default:
+        return new WideningIntegerSolutionInfo();
+      case WIAK_BINOP:
+        return new WIA_BINOP();
+      case WIAK_FILL:
+        return new WIA_FILL();
+      case WIAK_WIDEN:
+        return new WIA_WIDEN();
+      case WIAK_WIDEN_GARBAGE:
+        return new WIA_WIDEN_GARBAGE();
+      case WIAK_NARROW:
+        return new WIA_NARROW();
+      case WIAK_DROP_EXT:
+        return new WIA_DROP_EXT();
+      case WIAK_DROP_LOCOPY:
+        return new WIA_DROP_LOCOPY();
+      case WIAK_DROP_LOIGNORE:
+        return new WIA_DROP_LOIGNORE();
+      case WIAK_EXTLO:
+        return new WIA_EXTLO();
+      case WIAK_SUBSUME_FILL:
+        return new WIA_SUBMSUME_FILL();
+      case WIAK_SUBSUME_INDEX:
+        return new WIA_SUBSUME_INDEX();
+      case WIAK_NATURAL:
+        return new WIA_NATURAL();
+
+    }
+  }
+
+}
 
 
 
