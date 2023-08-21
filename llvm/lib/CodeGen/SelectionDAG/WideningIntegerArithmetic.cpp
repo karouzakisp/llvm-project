@@ -204,8 +204,16 @@ bool WideningIntegerArithmetic::IsExtension(unsigned Opcode){
 bool WideningIntegerArithmetic::IsAssign(unsigned Opcode){
   switch(Opcode){
     default: break;
-    case ISD::STORE:                      // TODO we need more?
+    case ISD::STORE:                      // TODO we need more? add masked store and others not vectors yet
       return true;
+  }
+  return false;
+}
+
+bool WideningIntegerArithmetic::IsLoad(unsigned Opcode){
+  switch(Opcode){
+    default: break;
+    case ISD::LOAD return true; //  
   }
   return false;
 }
@@ -226,22 +234,33 @@ WideningIntegerArithmetic::getNodeKind(SDNode *Node){
   else if(IsExtension(Opcode))
     return WideningIntegerSolutionInfo::WIAK_DROP_EXT;
   else if(IsTruncate(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_DROP_LOCOPY; // TODO 
-                            // on truncate how to distiguish dro-locopy
-                            // and drop_loignore ?
+    return WideningIntegerSolutionInfo::WIAK_DROP_LOCOPY;
+  else if(IsLit(Opcode))
+    return WideningIntegerSolutionInfo::WIAK_LIT;
+  else if(IsAssign(Opcode))
+    return WideningIntegerSolutionInfo::WIAK_ASSIGN;
+  else // IsLoad IsVar
+    return WideningIntegerSolutionInfo::WIAK_VAR;
+   
 }
 
 
 SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstruction(SolutionType Node){
   SolutionSet Solutions;
   unsigned Opcode = Node->getOpcode();
-  
+   
   if(IsBINOP(Opcode))
     return visitBINOP(Node);
   else if(IsExtension(Opcode)
     return visitDROP_EXT(Node);
   else if(IsTruncate(Opcode)) // TODO when to call visitDROP_LOIGNORE
     return visitDROP_LOCOPY(Node);
+  else{
+    Node->setFillTypeWidth(0);
+    Node->setWidth(getTargetWidth());
+    Solutions.insert(Node);
+  }
+    
   // TODO we are missing many opcodes here, need to add them. 
    
   return Solutions;
@@ -276,7 +295,9 @@ WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node, int cost){
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(SDNode *Node){
   
-  int cost = 1;
+  if(IsSolved(Node) { return AvailableSolutions[Node->getNodeId()]->second };
+
+  SmallVector<int> cost = 1; // One WideningSolutionInfo has many costs and one get's chosen
   // NodeId to FillTypeSet
   DenseMap<unsigned, FillTypeSet> ChildrenFillTypes;
   
@@ -285,9 +306,7 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
     ChildrenFillTypes[OperandNode->getNodeId()] = 
                                     getOperandFillTypes(OperandNode);
     SolutionSet Sols = visit_widening(OperandNode);
-    for(auto Sol : Sols){
-      cost += Sol->getCost();
-    }
+    cost += 1;
   }
   auto MyFillTypes = getFillTypes(Node->getOpcode()); 
   auto Sol = NodeToSolutionType(Node, cost);                         
@@ -401,7 +420,7 @@ void WideningIntegerArithmetic::solve(){
   setFillType(Root.getValueType(), Root.getValueType());
   
   for (SDNode &Node : DAG.allnodes()){
-      if(!isSolved(&Node)  && isInteger(&Node) ){ 
+      if(!issolved(&node)  && isInteger(&Node) ){ 
         visit_widening(&Node);  
       }
     
@@ -834,7 +853,7 @@ void WideningIntegerArithmetic::initTargetWidthTables(){
     RISCVSub.insert(createWidth(32, 32,32));
     RISCVSub.insert(createWidth(64, 64, 64));
 
-    // TODO How to add LUI ??
+    // TODO no need How to add LUI ??
     RISCVLoad.insert(createWidth(64, 64, 64);
     
     // TODO Distiguish LW AND LWU
