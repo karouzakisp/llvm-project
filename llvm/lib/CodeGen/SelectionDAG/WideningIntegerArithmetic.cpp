@@ -205,6 +205,7 @@ bool WideningIntegerArithmetic::IsAssign(unsigned Opcode){
   switch(Opcode){
     default: break;
     case ISD::STORE:                      // TODO we need more? add masked store and others not vectors yet
+    case ISD::MSTORE:
       return true;
   }
   return false;
@@ -213,7 +214,9 @@ bool WideningIntegerArithmetic::IsAssign(unsigned Opcode){
 bool WideningIntegerArithmetic::IsLoad(unsigned Opcode){
   switch(Opcode){
     default: break;
-    case ISD::LOAD return true; //  
+    case ISD::LOAD:
+    case ISD::MLOAD:
+      return true; //  
   }
   return false;
 }
