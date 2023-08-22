@@ -73,7 +73,7 @@ class WideningIntegerArithmetic {
  
     // checks whether a SDNode in the DAG is visited and solved` 
     isSolvedMap solvedNodes; 
-    bool IsSolved(SolutionType Node);
+    bool IsSolved(SDNode *Node);
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -131,12 +131,13 @@ class WideningIntegerArithmetic {
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
 
-    WideningIntegerSolutionInfo::WIAKind getNodeKind(SDNode *Node);
+    WIAKind getNodeKind(SDNode *Node);
     bool IsBINOP(unsigned Opcode);
     bool IsTruncate(unsigned Opcode);
     bool IsExtension(unsigned Opcode);
     bool IsAssign(unsigned Opcode);
     bool IsLit(unsigned Opcode);
+    bool IsLoad(unsigned Opcode);
   
     SolutionType NodeToSolutionType(SDNode *Node, int cost);
     IntegerFillType findFillType(unsigned Opcode);
@@ -229,21 +230,21 @@ bool WideningIntegerArithmetic::IsLit(unsigned Opcode){
   return false;
 }
 
-WideningIntegerSolutionInfo::WIAKind 
+WIAKind 
 WideningIntegerArithmetic::getNodeKind(SDNode *Node){
   unsigned Opcode = Node->getOpcode();
   if(IsBINOP(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_BINOP;
+    return WIAK_BINOP;
   else if(IsExtension(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_DROP_EXT;
+    return WIAK_DROP_EXT;
   else if(IsTruncate(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_DROP_LOCOPY;
+    return WIAK_DROP_LOCOPY;
   else if(IsLit(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_LIT;
+    return WIAK_LIT;
   else if(IsAssign(Opcode))
-    return WideningIntegerSolutionInfo::WIAK_ASSIGN;
+    return WIAK_ASSIGN;
   else // IsLoad IsVar
-    return WideningIntegerSolutionInfo::WIAK_VAR;
+    return WIAK_VAR;
    
 }
 
@@ -254,14 +255,16 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
    
   if(IsBINOP(Opcode))
     return visitBINOP(Node);
-  else if(IsExtension(Opcode)
+  else if(IsExtension(Opcode))
     return visitDROP_EXT(Node);
   else if(IsTruncate(Opcode)) // TODO when to call visitDROP_LOIGNORE
-    return visitDROP_LOCOPY(Node);
+    return visitDROP_LO_COPY(Node);
   else{
-    Node->setFillTypeWidth(0);
-    Node->setWidth(getTargetWidth());
-    Solutions.insert(Node);
+    WideningIntegerSolutionInfo *NewNode(Node);
+    NewNode->setFillTypeWidth(0);
+    
+    NewNode->setWidth(getTargetWidth());
+    Solutions.push_back(NewNode);
   }
     
   // TODO we are missing many opcodes here, need to add them. 
@@ -283,7 +286,7 @@ WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node, int cost){
   auto Sol = Builder.build(NodeKind);
   Sol->setOpcode(Node->getOpcode());
   // TODO how to select an appropriate fillType?
-  Sol->setFillType(findFillType(Node->getOpcode()));
+  
   Sol->setFillTypeWidth(FillTypeWidth);
   Sol->setWidth(Width);
   Sol->setUpdatedWidth(0);
@@ -298,9 +301,10 @@ WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node, int cost){
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(SDNode *Node){
   
-  if(IsSolved(Node) { return AvailableSolutions[Node->getNodeId()]->second };
+  if(IsSolved(Node)) 
+    return AvailableSolutions[Node->getNodeId()]; 
 
-  SmallVector<int> cost = 1; // One WideningSolutionInfo has many costs and one get's chosen
+  int cost = 1; // One WideningSolutionInfo has many costs and one get's chosen
   // NodeId to FillTypeSet
   DenseMap<unsigned, FillTypeSet> ChildrenFillTypes;
   
@@ -327,11 +331,11 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
   unsigned RedudantNodeToDeleteId = 0;
   int RedudantNodeToDeleteCost = INT_MAX;
   for(auto Sol : Solutions ){
-    int ret = Sol.isRedudant(GeneratedSol)
+    int ret = Sol->IsRedudant(GeneratedSol);
     if(ret == -1 ){
       WasRedudant = true; 
     }else if(ret == 1){
-      if(GeneratedSol->getCost() < redudantNodeToDeleteCost){
+      if(GeneratedSol->getCost() < RedudantNodeToDeleteCost){
         RedudantNodeToDeleteId = Sol->getNode()->getNodeId();
         RedudantNodeToDeleteCost = Sol->getCost();
       }
@@ -339,7 +343,8 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
   }
   if(RedudantNodeToDeleteId != 0 && 
     RedudantNodeToDeleteCost > GeneratedSol->getCost()){ 
-    auto ItToDelete = Solutions.find(RedudantNodeToDeleteId);
+    auto ItToDelete = std::find(Solutions::begin(), Solutions::end(), 
+                    RedudantNodeToDeleteId); // Possible small optimization
     std::erase(ItToDelete);
     Solutions.insert(GeneratedSol);
     return true;
@@ -423,7 +428,7 @@ void WideningIntegerArithmetic::solve(){
   setFillType(Root.getValueType(), Root.getValueType());
   
   for (SDNode &Node : DAG.allnodes()){
-      if(!issolved(&node)  && isInteger(&Node) ){ 
+      if(!IsSolved(&Node)  && isInteger(&Node) ){ 
         visit_widening(&Node);  
       }
     
@@ -436,8 +441,8 @@ bool WideningIntegerArithmetic::isInteger(SDNode *Node){
 
 // Checks whether a SDNode is visited 
 // so we don't visit and solve the same Node again
-bool WideningIntegerArithmetic::IsSolved(SolutionType Sol){
-  auto isVisited = solvedNodes.find(Sol->getNode()->getNodeId());
+bool WideningIntegerArithmetic::IsSolved(SDNode *Node){
+  auto isVisited = solvedNodes.find(Node->getNodeId());
   if(isVisited != solvedNodes.end())
     return true;
   
@@ -947,8 +952,9 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
     FillTypesMap.push_back(ISD::SDIV, SDivFillTypes);
     FillTypesMap.push_back(ISD::UDIV, UDivFillTypes);
 
-    FillTypeSet Eq, Ge, Geu, Gt, Gtu, Le, Leu, Lt, Ltu, Mod, Modu;
-    
+    FillTypeSet Eq, Ge, Geu, Gt, Gtu, Le, Leu, Lt, Ltu, Mod, Modu,
+                Mod, Modu, Mul, Mulu, Ne, Neg, Or, Popcnt, Rem,
+                Shl, Shra, Shrl, Sub;
     Eq.insert(make_tuple(SIGN, SIGN, SIGN));
     Eq.insert(make_tuple(ZEROS, ZEROS, ZEROS));
     Ge.insert(make_tuple(SIGN, SING, SIGN));
