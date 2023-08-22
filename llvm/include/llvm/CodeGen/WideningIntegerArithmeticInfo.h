@@ -17,6 +17,24 @@ enum IntegerFillType{
   ANYTHING,
   UNDEFINED
 };
+  
+enum WIAKind{
+  WIAK_BINOP= 0,
+  WIAK_FILL,
+  WIAK_WIDEN,
+  WIAK_WIDEN_GARBAGE,
+  WIAK_NARROW,
+  WIAK_DROP_EXT,
+  WIAK_DROP_LOCOPY,
+  WIAK_DROP_LOIGNORE,
+  WIAK_EXTLO,
+  WIAK_SUBSUME_FILL,
+  WIAK_SUBSUME_INDEX,
+  WIAK_NATURAL,
+  WIAK_ASSIGN,
+  WIAK_VAR,
+  WIAK_LIT,
+};
 
 
 
@@ -26,23 +44,6 @@ class WideningIntegerSolutionInfo{
 
 public:
 
-  enum WIAKind{
-    WIAK_BINOP= 0,
-    WIAK_FILL,
-    WIAK_WIDEN,
-    WIAK_WIDEN_GARBAGE,
-    WIAK_NARROW,
-    WIAK_DROP_EXT,
-    WIAK_DROP_LOCOPY,
-    WIAK_DROP_LOIGNORE,
-    WIAK_EXTLO,
-    WIAK_SUBSUME_FILL,
-    WIAK_SUBSUME_INDEX,
-    WIAK_NATURAL,
-    WIAK_ASSIGN,
-    WIAK_VAR,
-    WIAK_LIT,
-  };
 
 protected:
   // We care only about integer arithmetic instructions
@@ -83,7 +84,7 @@ public:
     Operands(other.getOperands()) {}
    
  
-  virtual inline bool operator==(const WideningIntegerSolutionInfo &a) = 0; 
+  virtual inline bool operator==(const WideningIntegerSolutionInfo &a); 
 
 
   unsigned getOpcode(void) const {
@@ -122,7 +123,7 @@ public:
     UpdatedWidth = UpdatedWidth_;
   }
  
-  WIAKind setKind(WIAKind Kind_){
+  void setKind(WIAKind Kind_){
     Kind = Kind_;
   } 
   WIAKind getKind() const {
@@ -162,12 +163,12 @@ public:
   // Returns 0 if no one is redudant
   // Returns -1 if b is redundant given solution this
   // Returns 1 if "this" is redudant given solution b
-  inline int isRedudant(const WideningIntegerSolutionInfo &b){
+  inline int IsRedudant(const WideningIntegerSolutionInfo *b){
 
     int n1 = Width;
     int c1 = Cost;
-    int n2 = b.getWidth();
-    int c2 = b.getCost();
+    int n2 = b->getWidth();
+    int c2 = b->getCost();
     
   
     if(n1 >= n2  && c1 >= c2 )
@@ -503,7 +504,7 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   }
   
   virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_SUBSUME_INDEX>(&a));
+    return (isa<WIA_NATURAL>(&a));
   }
 };
 
@@ -533,7 +534,7 @@ class WideningIntegerSolInfoBuilder {
       case WIAK_EXTLO:
         return new WIA_EXTLO();
       case WIAK_SUBSUME_FILL:
-        return new WIA_SUBMSUME_FILL();
+        return new WIA_SUBSUME_FILL();
       case WIAK_SUBSUME_INDEX:
         return new WIA_SUBSUME_INDEX();
       case WIAK_NATURAL:
@@ -542,7 +543,7 @@ class WideningIntegerSolInfoBuilder {
     }
   }
 
-}
+};
 
 
 
