@@ -274,23 +274,19 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
 
 
 WideningIntegerArithmetic::SolutionType
-WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node, int cost){
+WideningIntegerArithmetic::NodeToSolutionType(SDNode *Node){
 
-  WideningIntegerSolInfoBuilder Builder;
   
   unsigned char Width = Node->getValueType(0).getSizeInBits(); // TODO multiple results? 
   unsigned char FillTypeWidth = getTargetWidth() - Width; 
 
-  WIAKind NodeKind = getNodeKind(Node);
   
-  auto Sol = Builder.build(NodeKind);
-  Sol->setOpcode(Node->getOpcode());
   // TODO how to select an appropriate fillType?
   
   Sol->setFillTypeWidth(FillTypeWidth);
   Sol->setWidth(Width);
   Sol->setUpdatedWidth(0);
-  Sol->setCost(cost);
+  Sol->setCost(0);
   Sol->setNode(Node);
   Sol->setKind(NodeKind);
   return Sol;
@@ -304,7 +300,7 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   if(IsSolved(Node)) 
     return AvailableSolutions[Node->getNodeId()]; 
 
-  int cost = 1; // One WideningSolutionInfo has many costs and one get's chosen
+  SmallVector<int> Costs; // One WideningSolutionInfo has many costs and one get's chosen
   // NodeId to FillTypeSet
   DenseMap<unsigned, FillTypeSet> ChildrenFillTypes;
   
@@ -313,10 +309,9 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
     ChildrenFillTypes[OperandNode->getNodeId()] = 
                                     getOperandFillTypes(OperandNode);
     SolutionSet Sols = visit_widening(OperandNode);
-    cost += 1;
   }
   auto MyFillTypes = getFillTypes(Node->getOpcode()); 
-  auto Sol = NodeToSolutionType(Node, cost);                         
+  auto Sol = NodeToSolutionType(Node, cost);  // no need                    
   
   auto CalcSolutions = visitInstruction(Sol);
   solvedNodes[Node->getNodeId()] = true; 
@@ -335,20 +330,15 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
     if(ret == -1 ){
       WasRedudant = true; 
     }else if(ret == 1){
-      if(GeneratedSol->getCost() < RedudantNodeToDeleteCost){
-        RedudantNodeToDeleteId = Sol->getNode()->getNodeId();
-        RedudantNodeToDeleteCost = Sol->getCost();
+      assert(GeneratedSol->getCost() < RedudantNodeToDeleteCost);
+      auto ItToDelete = std::find(Solutions::begin(), Solutions::end(), 
+                      RedudantNodeToDeleteId); // Possible small optimization
+      std::erase(ItToDelete);
+      RedudantNodeToDeleteId = Sol->getNode()->getNodeId();
       }
     }
   }
-  if(RedudantNodeToDeleteId != 0 && 
-    RedudantNodeToDeleteCost > GeneratedSol->getCost()){ 
-    auto ItToDelete = std::find(Solutions::begin(), Solutions::end(), 
-                    RedudantNodeToDeleteId); // Possible small optimization
-    std::erase(ItToDelete);
-    Solutions.insert(GeneratedSol);
-    return true;
-  }else if(!WasRedudant){
+  if(!WasRedudant){
     Solutions.insert(GeneratedSol)
     return true;
   }
