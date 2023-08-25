@@ -110,8 +110,8 @@ define i8 @test11a(i8 %A) {
 ;; (A >> 8) << 8 === A & -256
 define i32 @test12(i32 %A) {
 ; CHECK-LABEL: @test12(
-; CHECK-NEXT:    [[TMP1:%.*]] = and i32 [[A:%.*]], -256
-; CHECK-NEXT:    ret i32 [[TMP1]]
+; CHECK-NEXT:    [[C:%.*]] = and i32 [[A:%.*]], -256
+; CHECK-NEXT:    ret i32 [[C]]
 ;
   %B = ashr i32 %A, 8
   %C = shl i32 %B, 8
@@ -1252,7 +1252,7 @@ declare void @use(i64)
 define i64 @shl_zext_extra_use(i32 %t) {
 ; CHECK-LABEL: @shl_zext_extra_use(
 ; CHECK-NEXT:    [[AND:%.*]] = and i32 [[T:%.*]], 16777215
-; CHECK-NEXT:    [[EXT:%.*]] = zext i32 [[AND]] to i64
+; CHECK-NEXT:    [[EXT:%.*]] = zext nneg i32 [[AND]] to i64
 ; CHECK-NEXT:    call void @use(i64 [[EXT]])
 ; CHECK-NEXT:    [[SHL:%.*]] = shl nuw nsw i64 [[EXT]], 8
 ; CHECK-NEXT:    ret i64 [[SHL]]

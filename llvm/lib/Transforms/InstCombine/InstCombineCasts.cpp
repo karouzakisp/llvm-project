@@ -1233,8 +1233,14 @@ Instruction *InstCombinerImpl::visitZExt(ZExtInst &Zext) {
   if (Instruction *Result = commonCastTransforms(Zext))
     return Result;
 
+
   Value *Src = Zext.getOperand(0);
   Type *SrcTy = Src->getType(), *DestTy = Zext.getType();
+
+  // if the value is Non Negative set the nneg flag 
+  if(isKnownNonNegative(Src, DL, 0, &AC, &Zext)){
+    Zext.setNonNeg(true); 
+  }
 
   // Try to extend the entire expression tree to the wide destination type.
   unsigned BitsToClear;
@@ -1507,8 +1513,11 @@ Instruction *InstCombinerImpl::visitSExt(SExtInst &Sext) {
   unsigned DestBitSize = DestTy->getScalarSizeInBits();
 
   // If the value being extended is zero or positive, use a zext instead.
-  if (isKnownNonNegative(Src, DL, 0, &AC, &Sext, &DT))
-    return CastInst::Create(Instruction::ZExt, Src, DestTy);
+  if (isKnownNonNegative(Src, DL, 0, &AC, &Sext, &DT)) {
+    auto *ZExtInst = CastInst::Create(Instruction::ZExt, Src, DestTy);
+    ZExtInst->setNonNeg(true);
+    return ZExtInst;
+  }
 
   // Try to extend the entire expression tree to the wide destination type.
   if (shouldChangeType(SrcTy, DestTy) && canEvaluateSExtd(Src, DestTy)) {

@@ -266,3 +266,4 @@ define i64 @test_zext(i32 %a) {
     ret i64 %res
 }
 
+

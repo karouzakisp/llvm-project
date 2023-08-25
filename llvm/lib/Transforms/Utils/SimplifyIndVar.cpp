@@ -514,6 +514,12 @@ bool SimplifyIndvar::eliminateTrunc(TruncInst *TI) {
     ICmpUsers.push_back(ICI);
   }
 
+  auto IsOperandsNonNeg = [&](ICmpInst *ICI){
+    const SCEV *SCEVOP1 = SE->getSCEV(ICI->getOperand(0));
+    const SCEV *SCEVOP2 = SE->getSCEV(ICI->getOperand(1));
+    return SE->isKnownNonNegative(SCEVOP1) && SE->isKnownNonNegative(SCEVOP2); 
+  };
+
   auto CanUseZExt = [&](ICmpInst *ICI) {
     // Unsigned comparison can be widened as unsigned.
     if (ICI->isUnsigned())
@@ -528,9 +534,7 @@ bool SimplifyIndvar::eliminateTrunc(TruncInst *TI) {
     // negative values. But in practice, we will never pass DoesZExtCollapse
     // check for a negative value, because zext(trunc(x)) is non-negative. So
     // it only make sense to check for non-negativity here.
-    const SCEV *SCEVOP1 = SE->getSCEV(ICI->getOperand(0));
-    const SCEV *SCEVOP2 = SE->getSCEV(ICI->getOperand(1));
-    return SE->isKnownNonNegative(SCEVOP1) && SE->isKnownNonNegative(SCEVOP2);
+    return IsOperandsNonNeg(ICI);
   };
   // Replace all comparisons against trunc with comparisons against IV.
   for (auto *ICI : ICmpUsers) {
@@ -548,6 +552,8 @@ bool SimplifyIndvar::eliminateTrunc(TruncInst *TI) {
     if (CanUseZExt(ICI)) {
       assert(DoesZExtCollapse && "Unprofitable zext?");
       Ext = new ZExtInst(Op1, IVTy, "zext", ICI);
+      if(IsOperandsNonNeg(ICI))
+        Ext->setNonNeg(true);
       Pred = ICmpInst::getUnsignedPredicate(Pred);
     } else {
       assert(DoesSExtCollapse && "Unprofitable sext?");
