@@ -142,3 +142,29 @@ for.body:                                         ; preds = %for.body, %for.body
   %niter.ncmp.1 = icmp eq i64 %niter.next.1, %unroll_iter
   br i1 %niter.ncmp.1, label %for.cond.cleanup.loopexit.unr-lcssa, label %for.body
 }
+
+declare void @llvm.assume(i1 %assume);
+define i64 @test3(i32 noundef signext %a){
+; CHECK-LABEL: @test3(
+; CHECK-NEXT:    [[ASSUME:%.*]] = icmp sge i32 [[A:%.*]], 0
+; CHECK-NEXT:    call void @llvm.assume(i1 [[ASSUME]])
+; CHECK-NEXT:    [[EXT:%.*]] = zext i32 [[A]] to i64
+; CHECK-NEXT:    ret i64 [[EXT]]
+;
+  %assume = icmp sge i32 %a, 0;
+  call void @llvm.assume(i1 %assume)
+  %ext = zext i32 %a to i64
+  ret i64 %ext
+}
+
+
+define i64 @test4(i32 noundef signext %a){
+; CHECK-LABEL: @test4(
+; CHECK-NEXT:    [[EXT:%.*]] = sext i32 [[A:%.*]] to i64
+; CHECK-NEXT:    ret i64 [[EXT]]
+;
+  %ext = zext nneg i32 %a to i64;
+  ret i64 %ext;
+}
+
+

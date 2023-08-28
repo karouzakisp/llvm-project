@@ -29,6 +29,8 @@ using namespace llvm;
 #define PASS_NAME "RISCV CodeGenPrepare"
 
 STATISTIC(NumZExtToSExt, "Number of SExt instructions converted to ZExt");
+STATISTIC(NumZExtToSExtNonNeg,
+          "Number of SExt non negative value instructions converted to ZExt");
 
 namespace {
 
@@ -36,7 +38,6 @@ class RISCVCodeGenPrepare : public FunctionPass,
                             public InstVisitor<RISCVCodeGenPrepare, bool> {
   const DataLayout *DL;
   const RISCVSubtarget *ST;
-
 public:
   static char ID;
 
@@ -84,6 +85,17 @@ bool RISCVCodeGenPrepare::visitZExtInst(ZExtInst &ZExt) {
     return true;
   }
 
+  // Look for zext instructions that have the nneg flag.
+  if (ZExt.hasNonNeg()){
+    auto SExt = new SExtInst(Src, ZExt.getType(), "", &ZExt);
+    SExt->takeName(&ZExt);
+    SExt->setDebugLoc(ZExt.getDebugLoc());
+
+    ZExt.replaceAllUsesWith(SExt);
+    ZExt.eraseFromParent();
+    ++NumZExtToSExtNonNeg;
+    return true; 
+  }
   // Convert (zext (abs(i32 X, i1 1))) -> (sext (abs(i32 X, i1 1))). If abs of
   // INT_MIN is poison, the sign bit is zero.
   using namespace PatternMatch;
@@ -158,7 +170,6 @@ bool RISCVCodeGenPrepare::runOnFunction(Function &F) {
   ST = &TM.getSubtarget<RISCVSubtarget>(F);
 
   DL = &F.getParent()->getDataLayout();
-
   bool MadeChange = false;
   for (auto &BB : F)
     for (Instruction &I : llvm::make_early_inc_range(BB))

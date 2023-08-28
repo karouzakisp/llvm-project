@@ -125,3 +125,15 @@ for.body:                                         ; preds = %for.body, %for.body
   %niter.ncmp.1 = icmp eq i64 %niter.next.1, %unroll_iter
   br i1 %niter.ncmp.1, label %for.cond.cleanup.loopexit.unr-lcssa, label %for.body
 }
+
+define i64 @test3(i32 noundef %a){
+; CHECK-LABEL: test3:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    sext.w a0, a0
+; CHECK-NEXT:    addi a0, a0, 5
+; CHECK-NEXT:    ret
+
+  %ext = zext nneg i32 %a to i64
+  %added = add i64 %ext, 5
+  ret i64 %added
+}
