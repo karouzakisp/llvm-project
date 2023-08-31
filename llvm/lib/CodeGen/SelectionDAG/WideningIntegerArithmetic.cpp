@@ -112,6 +112,7 @@ class WideningIntegerArithmetic {
     SolutionSet closure(SolutionSet Sols);
 
     SolutionSet visitBINOP(SolutionType Sol);
+    SolutionSet visitUNOP(SolutionType Sol);
     SolutionSet visitFILL(SolutionType Sol);
     SolutionSet visitWIDEN(SolutionType Sol);
     SolutionSet visitWIDEN_GARBAGE(SolutionType Sol);
@@ -133,6 +134,7 @@ class WideningIntegerArithmetic {
 
     WIAKind getNodeKind(SDNode *Node);
     bool IsBINOP(unsigned Opcode);
+    bool IsUNOP(unsigned Opcode);
     bool IsTruncate(unsigned Opcode);
     bool IsExtension(unsigned Opcode);
     bool IsAssign(unsigned Opcode);
@@ -181,6 +183,21 @@ bool WideningIntegerArithmetic::IsBINOP(unsigned Opcode){
     case ISD::XOR:      return true;
     
   }
+}
+
+
+bool WideningIntegerArithmetic::IsUNOP(unsigned Opcode){
+  switch(Opcode){
+    default: return false;
+    case ISD::ABS: 
+    case ISD::BSWAP:
+    case ISD::CTTZ:
+    case ISD::CTLZ:
+    case ISD::BITREVERSE:
+    case ISD::PARITY:
+    case ISD::FREEZE:       return true;
+  }
+
 }
 
 bool WideningIntegerArithmetic::IsTruncate(unsigned Opcode){
