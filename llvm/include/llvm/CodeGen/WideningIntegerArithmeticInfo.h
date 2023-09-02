@@ -20,6 +20,7 @@ enum IntegerFillType{
   
 enum WIAKind{
   WIAK_BINOP= 0,
+  WIAK_UNOP,
   WIAK_FILL,
   WIAK_WIDEN,
   WIAK_WIDEN_GARBAGE,
@@ -34,6 +35,7 @@ enum WIAKind{
   WIAK_ASSIGN,
   WIAK_VAR,
   WIAK_LIT,
+  WIAK_LOAD
 };
 
 
@@ -508,6 +510,31 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   }
 };
 
+class WIA_LOAD : public WideningIntegerSolutionInfo
+{
+  public:
+  WIA_LOAD() {}
+  ~WIA_LOAD() {}
+  WIA_LOAD(unsigned char Opcode_, IntegerFillType FillType_,
+            unsigned char FillTypeWidth_,
+            unsigned char Width_, unsigned char UpdatedWidth_, 
+            short int Cost_, SDNode *Node_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_NATURAL, Node_) {}
+
+  static inline bool classof(WIA_LOAD const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_LOAD: return true;
+      default: return false;
+    } 
+  }
+  
+  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
+    return (isa<WIA_NATURAL>(&a));
+  }
+};
 
 class WideningIntegerSolInfoBuilder {
   public:
