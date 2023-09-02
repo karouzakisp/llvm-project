@@ -111,8 +111,10 @@ class WideningIntegerArithmetic {
 
     SolutionSet closure(SolutionSet Sols);
 
+    // TODO refactor them to SolutionSet visit****(SDNode *Node);
     SolutionSet visitBINOP(SolutionType Sol);
-    SolutionSet visitUNOP(SolutionType Sol);
+    SolutionSet visitLOAD(LoadSDNode *Node);
+    SolutionSet visitUNOP(SDNode *Node);
     SolutionSet visitFILL(SolutionType Sol);
     SolutionSet visitWIDEN(SolutionType Sol);
     SolutionSet visitWIDEN_GARBAGE(SolutionType Sol);
@@ -142,7 +144,6 @@ class WideningIntegerArithmetic {
     bool IsLoad(unsigned Opcode);
   
     SolutionType NodeToSolutionType(SDNode *Node, int cost);
-    IntegerFillType findFillType(unsigned Opcode);
      
 };
 
@@ -186,6 +187,7 @@ bool WideningIntegerArithmetic::IsBINOP(unsigned Opcode){
 }
 
 
+// TODO check UNOPS
 bool WideningIntegerArithmetic::IsUNOP(unsigned Opcode){
   switch(Opcode){
     default: return false;
@@ -328,7 +330,6 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
     SolutionSet Sols = visit_widening(OperandNode);
   }
   auto MyFillTypes = getFillTypes(Node->getOpcode()); 
-  auto Sol = NodeToSolutionType(Node, cost);  // no need                    
   
   auto CalcSolutions = visitInstruction(Sol);
   solvedNodes[Node->getNodeId()] = true; 
@@ -349,7 +350,9 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
     }else if(ret == 1){
       assert(GeneratedSol->getCost() < RedudantNodeToDeleteCost);
       auto ItToDelete = std::find(Solutions::begin(), Solutions::end(), 
-                      RedudantNodeToDeleteId); // Possible small optimization
+                      RedudantNodeToDeleteId); 
+      // TODO consider change data structure for Possible small optimization
+      // for std::find
       std::erase(ItToDelete);
       RedudantNodeToDeleteId = Sol->getNode()->getNodeId();
       }
@@ -528,7 +531,54 @@ WideningIntegerArithmetic::getOperandFillTypes(SDNode *Node){
   }
   return getFillTypes(Opcode);
 } 
+   
+SolutionSet visitUNOP(SDNode *Node){
+  unsigned char ExprWidth, FillTypeWidth;
+ 
+  auto Sol = new WIA_UNOP();
   
+  SolutionType N0 = Node->getOperand(0).getValueType(0).getSizeInBits();
+  FillTypeWidth = getTargetWidth() - Width;
+
+  Sol->setFillType(FillType);  
+
+  Sol->setFillTypeWidth(FillTypeWidth);
+  Sol->setWidth(Width);
+  Sol->setUpdatedWidth(0);
+  Sol->setCost(0);
+  Sol->setNode(Node);
+  SolutionSet Sols;
+  Sols.push_back(Sol) 
+  return Sols;  
+}
+  
+WideningIntegerArithmetic::SolutionSet 
+WideningIntegerArithmetic::visitLOAD(LoadSDNode *Node){
+ 
+  // TODO very far in the future distiguish load that the users of the load 
+  // use only a smaller width and ignore the upper bits
+ 
+  unsigned char Width = Node->getValueType(0).getSizeInBits(); 
+  unsigned char FillTypeWidth = getTargetWidth() - Width; 
+  auto Sol = new WIA_LOAD();
+  IntegerFillType FillType; 
+  // distiguish EXTLOAD and NON ext LOAD Non EXT needs to be extended if the upper bits are used
+  switch(Node->getExtensionType()){
+    case ISD::NON_EXTLOAD: FillType = IntegerFillType::ANYTHING; 
+    case ISD::EXTLOAD: FillType = IntegerFillType::ANYTHING; 
+    case ISD::SEXTLOAD: FillType = IntegerFillType::SIGN;
+    case ISD::ZEXTLOAD: FillType = IntegerFillType::ZEROS;
+  }
+  Sol->setFillType(FillType);  
+  Sol->setFillTypeWidth(FillTypeWidth);
+  Sol->setWidth(Width);
+  Sol->setUpdatedWidth(0);
+  Sol->setCost(0);
+  Sol->setNode(Node);
+  SolutionSet Sols;
+  Sols.push_back(Sol) 
+  return Sols;
+}
     
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
@@ -603,7 +653,7 @@ WideningIntegerArithmetic::SolutionSet  WideningIntegerArithmetic::visitFILL(
   Sols.push_back(Fill) 
   return Sols;
 }
-    
+  
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
                           WideningIntegerSolutionInfo *Sol){
   
@@ -627,7 +677,9 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       WideningIntegerSolutionInfo *Sol){
  
-  if(!hasTypeGarbage(Sol->getFillType());
+  if(!hasTypeGarbage(Sol->getFillType())){
+    return NULL;
+  }
 
   unsigned ExtensionOpc = ISD::ANY_EXTEND  // Results to a garbage widened
   WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
@@ -745,16 +797,14 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitEXTLO(
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
-  unsigned newOldWidth = 
-  unsigned OldWidth, NewWidth; // TODO how to calculate OldWidth and NewWidth??
-  OldWidth = LeftSol->getWidth();
-  newWidth = 0; // TODO check
+  unsigned n = LeftSol->getFillTypeWidth();
+  newWidth = getTargetWidth(); // TODO check for x86 that has multiple width registers
   // check that LeftSol->getWidth == RightSol->getWidth &&
   // check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
   // check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
   if(LeftSol->getWidth() != RightSol->getWidth() || 
      LeftSol->getFillTypeWidth() != RightSol->getFillTypeWidth() ||
-     (LeftSol->getFillType() != ZEROS && hasTypeGarbage(RightSol->getFillType()) ){
+     (LeftSol->getFillType() != ZEROS && !hasTypeGarbage(RightSol->getFillType()) ){
     return NULL;
   }
   
@@ -868,7 +918,6 @@ void WideningIntegerArithmetic::initTargetWidthTables(){
     RISCVSub.insert(createWidth(32, 32,32));
     RISCVSub.insert(createWidth(64, 64, 64));
 
-    // TODO no need How to add LUI ??
     RISCVLoad.insert(createWidth(64, 64, 64);
     
     // TODO Distiguish LW AND LWU
@@ -924,14 +973,6 @@ void WideningIntegerArithmetic::initTargetWidthTables(){
     X86OpsMap[ISD::ADD].push_back(X86Add); 
 }
 
-// Finds 
-WideningIntegerArithmetic::IntegerFillType findFillType(unsigned Opcode){
-
-
-  return SIGN;
-
-
-}
 
 void WideningIntegerArithmetic::initOperatorsFillTypes(){
 
@@ -981,12 +1022,7 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
     
 inline bool WideningIntegerArithmetic::hasTypeGarbage(IntegerFillType fill){
   
-  if(fill != ANYTHING && fill != ZEROS && fill != ZEROS){
-    return 0;
-  }
   return 1;
-
-
 }
   
 inline bool WideningIntegerArithmetic::hasTypeT(IntegerFillType fill){
@@ -994,7 +1030,7 @@ inline bool WideningIntegerArithmetic::hasTypeT(IntegerFillType fill){
 }
 
 inline bool WideningIntegerArithmetic::hasTypeS(IntegerFillType fill){
-  if(fill != ANYTHING && fill != ZEROS && fill != ZEROS){
+  if(fill != ANYTHING && fill != ZEROS && fill != SIGN){
     return 0;
   }
   return 1;
