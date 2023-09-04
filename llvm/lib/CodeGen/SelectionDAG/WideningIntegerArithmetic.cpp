@@ -54,6 +54,7 @@ class WideningIntegerArithmetic {
     } 
   
     void solve();
+    ///                         NodeId 
     using isSolvedMap = DenseMap<int, bool>;
     using SolutionSet = SmallVector<WideningIntegerSolutionInfo *>;
     using SolutionSetParam = SmallVectorImpl<WideningIntegerSolutionInfo * >;    
@@ -643,22 +644,30 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
 
 WideningIntegerArithmetic::SolutionSet  WideningIntegerArithmetic::visitFILL(
                           SDNode *Node){
+  
+  SolutionSet Sols;
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
   // TODO check if targets support this how to check??
   // target must have sxlo(w->w') or just add appropriate instructions
-  
-   
   unsigned char Width = getScalarSize(Node->getOperand(0).getValueType(0));  
   unsigned char FillTypeWidth = getTargetWidth() - Width; 
-  // Results to a truncate
-  WideningIntegerSolutionInfo *Fill = new WIA_FILL(
-    ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
-    getTargetWidth() , Sol->getCost() + 1 );
-  Fill->addOperand(Sol);
   
-  SolutionSet Sols;
-  Sols.push_back(Fill); 
+  auto Sols = AvailableSolutions[Node->getNodeId()];
+  for(auto Sol : Sols){
+    if(Sol->getOpcode() == ISD::SIGN_EXTEND_INREG)
+      continue;    // TODO CHECK is FILL a ISD::SIGN_EXTEND_INREG ??
+    // WIA_FILL extends the least significant *Width* bits of SDNode
+    // to targetWidth
+    WideningIntegerSolutionInfo *Fill = new WIA_FILL(
+      ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
+      getTargetWidth() , Sol->getCost() + 1 );
+    
+    Fill->addOperand(Sol);
+    Sols.push_back(Fill);  
+  }
+   
+  
   return Sols;
 }
   
@@ -669,18 +678,27 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
   // if(!hasTypeS(Sol->getFillType())
   //  return NULL; 
   
+  SolutionSet Sols;
   unsigned char Width = getScalarSize(Node->getOperand(0).getValueType(0));  
   unsigned char FillTypeWidth = getTargetWidth() - Width; 
  
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
-  // Results to a widened expr
-  WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
-    ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
-    getTargetWidth() , Sol->getCost() + 1 );
-  Widen->addOperand(Sol);
+  auto Sols = AvailableSolutions[Node->getNodeId()];
+  for(auto Sol : Sols){
+    if(isExtOpcode(Sol->getOpcode())
+      continue;
+    // Results to a widened expr
+    WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
+      ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
+      getTargetWidth() , Sol->getCost() + 1 );
+    Widen->addOperand(Sol);
+    
+    Widen->addOperand(Sol);
+    Sols.push_back(GarbageWiden); 
+    
+  }
 
-  SolutionSet Sols;
   Sols.push_back(Widen); 
   return Sols;
 }
@@ -689,16 +707,22 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       SDNode *Node){
 
+  SolutionSet Sols;
   unsigned char Width = getScalarSize(Node->getOperand(0).getValueType(0));  
   unsigned char FillTypeWidth = getTargetWidth() - Width;
   unsigned ExtensionOpc = ISD::ANY_EXTEND  // Results to a garbage widened
-  WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
-    ExtensionOpc, ExtensionChoice, FillTypeWidth,  Width, getTargetWidth(), 
-    Sol->getCost() + 1 );
-  GarbageWiden->addOperand(Sol);
+  auto Sols = AvailableSolutions[Node->getNodeId()];
+  for(auto Sol : Sols){
+    if(isExtOpcode(Sol->getOpcode())
+      continue;
+    WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
+      ExtensionOpc, ANYTHING, FillTypeWidth,  Width, getTargetWidth(), 
+      Sol->getCost() + 1 );
+    GarbageWiden->addOperand(Sol);
+    Sols.push_back(GarbageWiden); 
+    
+  }
   
-  SolutionSet Sols;
-  Sols.push_back(GarbageWiden); 
   return Sols;
 }
     

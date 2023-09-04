@@ -50,6 +50,8 @@ public:
 protected:
   // We care only about integer arithmetic instructions
   unsigned       Opcode;
+  // The new Opcode that has *this* as an operand 
+  unsigned       NewOpcode;
   // Fill type for the upper bits of the expression
   // can be zero, one or garbage
   IntegerFillType   FillType; // τ
