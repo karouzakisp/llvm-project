@@ -657,8 +657,8 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
   // we have more than one target instr for the same operand 
   // TODO define newVT
   if(OperandFillTypes.size() > 1 || TLI.isTypeDesirableForOp(Node->getOpcode(),newVT))
-  newSolutions = closure(newSolutions);
-  // TODO append all the newSolutions in AvailableSolutions[NodeId]
+    return closure(newSolutions);
+
   return AvailableSolutions[NodeId];
     
 }
@@ -733,7 +733,8 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN_GAR
       SDNode *Node){
 
   SolutionSet Sols;
-  unsigned char Width = getScalarSize(Node->getOperand(0).getValueType(0));  
+  // #TODO get width of expr must be in the same node or on the operand
+  unsigned char Width = getScalarSize(Node->getValueType(0));  
   unsigned char FillTypeWidth = getTargetWidth() - Width;
   unsigned ExtensionOpc = ISD::ANY_EXTEND  // Results to a garbage widened
   auto Sols = AvailableSolutions[Node->getNodeId()];
