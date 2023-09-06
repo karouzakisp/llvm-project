@@ -310,7 +310,6 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
 
 
 
-// TODO check correctness
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(SDNode *Node){
   
@@ -485,11 +484,18 @@ WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::closure(SDNode *Node){
   Sols = AvailableSolutions[Node->getNodeId()];
   do{
+    bool Changed = False;
+    unsigned SolsSize = AvailableSolutions[Node->getNodeId()].size();
     visitFILL(Node);
     visitWIDEN(Node);
-    visitWIDEN_GARBAGE(Node);
-    visitNARROW(Node);
-    auto Changed = addNonRedudant(NewSolutions, NewSolution);     
+    visitWIDEN_GARBAGE(Node); // TODO add those visits to perform insertions on a set
+    visitNARROW(Node);        // and after calling allNonRedudant remove everything 
+    unsigned NewSolsSize = AvailableSolutions[Node->getNodeId()].size();
+    for(int k = SolsSize; k < NewSolsSize; k++){
+      auto Added = addNonRedudant(AvailableSolutions[Node->getNodeId()]);
+      if(Added == true)
+        Changed = true;
+    } 
   }while(Changed == true );
   return Sols;
 }
