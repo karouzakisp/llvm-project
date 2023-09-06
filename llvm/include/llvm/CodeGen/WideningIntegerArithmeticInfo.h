@@ -501,9 +501,11 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
 
   static inline bool classof(WIA_NATURAL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
+
     switch(Base->getKind()){
       case WIAK_NATURAL: return true;
       default: return false;
+
     } 
   }
   
@@ -523,7 +525,7 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_NATURAL, Node_) {}
+        UpdatedWidth_, Cost_, WIAK_LOAD, Node_) {}
 
   static inline bool classof(WIA_LOAD const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -534,9 +536,36 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
   }
   
   virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_NATURAL>(&a));
+    return (isa<WIA_LOAD>(&a));
   }
 };
+
+class WIA_UNOP : public WideningIntegerSolutionInfo
+{
+  public:
+  WIA_UNOP() {}
+  ~WIA_UNOP() {}
+  WIA_UNOP(unsigned char Opcode_, IntegerFillType FillType_,
+            unsigned char FillTypeWidth_,
+            unsigned char Width_, unsigned char UpdatedWidth_, 
+            short int Cost_, SDNode *Node_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_NATURAL, Node_) {}
+
+  static inline bool classof(WIA_UNOP const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_UNOP: return true;
+      default: return false;
+    } 
+  }
+  
+  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
+    return (isa<WIA_UNOP>(&a));
+  }
+};
+
 
 class WideningIntegerSolInfoBuilder {
   public:
