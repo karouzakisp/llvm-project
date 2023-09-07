@@ -87,8 +87,10 @@ class WideningIntegerArithmetic {
     void initTargetWidthTables();
     
                                         
-    OperatorFillTypesMap FillTypesMap; 
-    inline FillTypeSet getFillTypes(unsigned Opcode);
+    OperatorFillTypesMap FillTypesMap;
+ 
+    template<typename T>
+    T getFillTypes(unsigned Opcode);
     inline IntegerFillType getOrNullFillType(
             FillTypeSet availableFillTypes, IntegerFillType Left, 
             IntegerFillType Right);
@@ -360,22 +362,21 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
   return false;
 }
 
-WideningIntegerArithmetic::FillTypeSet
-WideningIntegerArithmetic::getFillTypes(unsigned Opcode){
 
-  auto It = FillTypesMap.find(Opcode);
-  assert(It != FillTypesMap.end() && "Opcode does not have fillTypes" );   
-  FillTypeSet FillTypes = It->second;
-  return FillTypes;
+template<typename T>
+T WideningIntegerArithmetic::getFillTypes(unsigned Opcode){
+  
+  if(IsBINOP(Opcode)){
+    auto It = FillTypesMap.find(Opcode);
+    assert(It != FillTypesMap.end() && "Opcode does not have fillTypes" );   
+    return It->second;
+  }else if(IsUNOP(Opcode)){
+    auto It = UnaryFillTypesMap.find(Opcode);
+    assert(It != UnaryFillTypesMap.end() && "Opcode does not have fillTypes");
+    return It->second;  
+  }
 }
 
-WideningIntegerArithmetic::UnaryFillTypeSet
-WideningIntegerArithmetic::getUnaryFillTypes(unsigned Opcode){
-  auto It = UnaryFillTypesMap.find(Opcode);
-  assert(It != UnaryFillTypesMap.end() && "Opcode does not have fillTypes");
-  return It->second;  
-
-}
 
 inline IntegerFillType 
   WideningIntegerArithmetic::getOrNullFillType(
@@ -465,8 +466,16 @@ bool WideningIntegerArithmetic::IsSolved(SDNode *Node){
 
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::tryClosure(SDNode *Node){
-  
-  FillTypeSet Fills = getFillTypes(Node->getOpcode());
+  FillTypeSet Fills;
+  unsigned Opcode = Node->getOpcode();
+  unsigned NodeId = Node->getNodeId(); 
+  if(IsUNOP(Opcode))
+    Fills = getFillTypes<UnaryFillTypeSet>(Opcode);
+  else if(IsBINOP(Opcode))
+    Fills = getFillTypes<FillTypeSet>(Opcode);
+  else
+    return AvailableSolutions[NodeId];
+
   if(Fills.size () > 1 )
     return closure(Node);
  
@@ -478,7 +487,7 @@ WideningIntegerArithmetic::tryClosure(SDNode *Node){
     if(TLI.isOperationLegal(Node->getOpcode(),newVT))
      return closure(AvailableSolutions[Node->getNodeId()]);
   } 
-  return AvailableSolutions[Node->getNodeId()];   
+  return AvailableSolutions[NodeId];   
 }
 
 WideningIntegerArithmetic::SolutionSet 
