@@ -484,7 +484,7 @@ WideningIntegerArithmetic::tryClosure(SDNode *Node){
     if(IntegerSize == Size)
       continue; 
     EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize);
-    if(TLI.isOperationLegal(Node->getOpcode(),newVT))
+    if(TLI.isOperationLegal(Node->getOpcode(), newVT))
      return closure(AvailableSolutions[Node->getNodeId()]);
   } 
   return AvailableSolutions[NodeId];   
@@ -591,8 +591,9 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
   
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitBINOP(SolutionType Node){
-  
+WideningIntegerArithmetic::visitBINOP(SDNode* Node){
+ 
+   
   SDNode *N0 = Node->getOperand(0);
   SDNode *N1 = Node->getOperand(1);
 
@@ -603,7 +604,8 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
   SolutionSet  RightSols = 
       AvailableSolutions.find(N1->getNodeId())->second;
 
-  unsigned NodeId = Node->getNodeId(); 
+  unsigned NodeId = Node->getNodeId();
+  unsigned Opcode = Node->getOpcode(); 
   FillTypeSet OperandFillTypes = getOperandFillTypes(Node);
   // A function that combines solutions from operands left and right
   auto combineBinOp = [&](SolutionType Node, auto SolsLeft, auto SolsRight){    
@@ -616,13 +618,20 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
                                     rightSolution->getFillType());
         if(FillType == UNDEFINED)
           continue;
-        unsigned char Cost = leftSolution->getCost() + rightSolution->getCost();
         unsigned char w1 = leftSolution->getUpdatedWidth();
         unsigned char w2 = rightSolution->getUpdatedWidth();
-        unsigned char UpdatedWidth = getBinOpTargetWidth(Node->getOpcode(), 
-                                                         w1, w2);
+        if(w1 != w2)
+          continue;
+        EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), w1); 
+        if(!TLI.isLegalOperation(Opcode, NewVT))
+          continue;
+        // w1 x w2 --> w all widths are the same at this point
+        // and there is a LegalOperation for that Opcode
+        unsigned char UpdatedWidth = w1;
+        
+        unsigned char Cost = leftSolution->getCost() + rightSolution->getCost();
         unsigned char Width = getScalarSize(Node->getValueType(0));  
-        unsigned char FillTypeWidth = getTargetWidth() - UpdatedWidth(); 
+        unsigned char FillTypeWidth = getTargetWidth() - UpdatedWidth; 
                       // this Target of this Binary operator of the form
                       // width1 x width2 = newWidth
                       // for example on rv64 we have addw
@@ -631,7 +640,8 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
 
         auto Sol = new WIA_BINOP(Node->getOpcode(), FillType, 
             FillTypeWidth, Node->getWidth(), UpdatedWidth, Cost, Node->getNode());
-
+        Sol->addOperand(leftSolution);
+        Sol->addOperand(rightSolution);
         AvailableSolutions[NodeId].push_back(Sol); 
       }
     }
@@ -641,7 +651,7 @@ WideningIntegerArithmetic::visitBINOP(SolutionType Node){
   return tryClosure(Node); 
 }
 
-WideningIntegerArithmetic::SolutionSet  WideningIntegerArithmetic::visitFILL(
+void WideningIntegerArithmetic::visitFILL(
                           SDNode *Node){
   
   SDValue N0 = Node->getOperand(0);
@@ -681,7 +691,7 @@ WideningIntegerArithmetic::SolutionSet  WideningIntegerArithmetic::visitFILL(
   return Sols;
 }
   
-WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
+void WideningIntegerArithmetic::visitWIDEN(
                           SDNode *Node){
  
   // TODO how to check for Type S? depends on target ? or on this operand
@@ -706,11 +716,10 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
     PossibleSolutions.push_back(Widen);   
   }
 
-  return Sols;
 }
     
 
-WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN_GARBAGE(
+void WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       SDNode *Node){
 
   SolutionSet Sols;
