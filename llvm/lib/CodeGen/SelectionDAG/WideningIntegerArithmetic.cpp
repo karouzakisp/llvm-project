@@ -76,6 +76,7 @@ class WideningIntegerArithmetic {
     // checks whether a SDNode in the DAG is visited and solved` 
     isSolvedMap solvedNodes; 
     bool IsSolved(SDNode *Node);
+    SolutionSet PossibleSolutions;
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -119,10 +120,10 @@ class WideningIntegerArithmetic {
     SolutionSet visitLOAD(SDNode *Node);
     SolutionSet visitSTORE(SDNode *Node);
     SolutionSet visitUNOP(SDNode *Node);
-    SolutionSet visitFILL(SDNode *Sol);
-    SolutionSet visitWIDEN(SDNode *Sol);
-    SolutionSet visitWIDEN_GARBAGE(SDNode *Sol);
-    SolutionSet visitNARROW(SDNode *Sol);
+    void visitFILL(SDNode *Sol);
+    void visitWIDEN(SDNode *Sol);
+    void visitWIDEN_GARBAGE(SDNode *Sol);
+    void visitNARROW(SDNode *Sol);
     SolutionSet visitDROP_EXT(SDNode *Sol);
     SolutionSet visitDROP_LO_COPY(SDNode *Sol);
     SolutionSet visitDROP_LO_IGNORE(SDNode *Sol);
@@ -482,20 +483,22 @@ WideningIntegerArithmetic::tryClosure(SDNode *Node){
 
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::closure(SDNode *Node){
-  Sols = AvailableSolutions[Node->getNodeId()];
+  unsigned NodeId = Node->getNodeId();
+  Sols = AvailableSolutions[NodeId];
   do{
     bool Changed = False;
-    unsigned SolsSize = AvailableSolutions[Node->getNodeId()].size();
+    unsigned SolsSize = AvailableSolutions[NodeId].size();
     visitFILL(Node);
     visitWIDEN(Node);
-    visitWIDEN_GARBAGE(Node); // TODO add those visits to perform insertions on a set
-    visitNARROW(Node);        // and after calling allNonRedudant remove everything 
-    unsigned NewSolsSize = AvailableSolutions[Node->getNodeId()].size();
-    for(int k = SolsSize; k < NewSolsSize; k++){
-      auto Added = addNonRedudant(AvailableSolutions[Node->getNodeId()]);
-      if(Added == true)
+    visitWIDEN_GARBAGE(Node); 
+    visitNARROW(Node); 
+    unsigned NewSolsSize = AvailableSolutions[NodeId].size();
+    for(PossibleSol : PossibleSolutions){
+      bool Added = addNonRedudant(AvailableSolutions[NodeId], PossibleSol);
+      if(Added)
         Changed = true;
-    } 
+    }
+    PossibleSolutions.clear();  // TODO how to optimize this ? 
   }while(Changed == true );
   return Sols;
 }
@@ -543,7 +546,6 @@ WideningIntegerArithmetic::SolutionSet visitUNOP(SDNode *Node){
   for(auto Sol : Sols){ 
     auto Unop = new WIA_UNOP(Node->getOpcode(), FillTypes, FillTypeWidth, 
                 w1, getTargetWidth(), Sol->getCost(), Node); 
-    // TODO CHECK getTargetWidth() is correct for updatedWidth?
     Unop.addOperand(push_back(Sol)); 
     NewSols.push_back(Sol)
   }
@@ -662,7 +664,8 @@ WideningIntegerArithmetic::SolutionSet  WideningIntegerArithmetic::visitFILL(
       ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
       getTargetWidth() , Sol->getCost() + 1 ); 
     Fill->addOperand(Sol);
-    AvailableSolutions[Node->getNodeId()].push_back(Fill);  
+    PossibleSolutions.push_back(Fill);  
+
   }
    
   
@@ -690,10 +693,8 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN(
     WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
       ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
       getTargetWidth() , Sol->getCost() + 1 );
-    Widen->addOperand(Sol);
-    
-    Sols.push_back(Widen); 
-    
+    Widen->addOperand(Sol); 
+    PossibleSolutions.push_back(Widen);   
   }
 
   return Sols;
@@ -717,15 +718,13 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitWIDEN_GAR
       ExtensionOpc, ANYTHING, FillTypeWidth,  Width, getTargetWidth(), 
       Sol->getCost() + 1 );
     GarbageWiden->addOperand(Sol);
-    Sols.push_back(GarbageWiden); 
-    
+    PossibleSolutions.push_back(GarbageWiden);    
   }
   
   return Sols;
 }
     
-WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitNARROW(
-                          SDNode *Node){
+void WideningIntegerArithmetic::visitNARROW(SDNode *Node){
   
  
   unsigned char Width = getScalarSize(Node->getValueType(0));  
@@ -735,20 +734,22 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitNARROW(
   // Not sure the kinds of truncate of the Target will determine it.
   unsigned ExtensionOpc = ExtensionChoice == SIGN ? ISD::SIGN_EXTEND :
                                                     ISD::ZERO_EXTEND;
-  
-  unsigned char UpdatedWidth = 32; // TODO get info from targets. 
-  // Check truncate size for Machine
-  // for example rv64 has zext for truncate
-  // or store 32 
-  // Narrowing on targets how they are implemented?? 
-  WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
-    // Will depend on available Narrowing , 
-    FillTypeWidth, Width, UpdatedWidth, Sol->getCost() + 1 );
-  Trunc->addOperand(Sol);
-  
-  SolutionSet Sols;
-  Sols.push_back(Trunc); 
-  return Sols;
+ 
+  auto Sols = AvailableSolutions[Node->getNodeId()];
+  for(auto Sol : Sols){ 
+    for(int k = 0; k < IntegerSizes.size(); k++){
+      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize[k]);
+      if(!TLI.isOperationLegal(ISD::TRUNCATE, NewVT) ||
+         isExtOpcode(Sol->getOpcode())) // do we need to keep solutions of the form truncate( anyext (x ) ) ??
+        continue;
+
+      WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
+        // Will depend on available Narrowing , 
+        FillTypeWidth, Width, IntegerSize[k], Sol->getCost() + 1 );
+      Trunc->addOperand(Sol);
+      PossibleSolutions.push_back(Trunc);
+    }
+  } 
 }
     
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
