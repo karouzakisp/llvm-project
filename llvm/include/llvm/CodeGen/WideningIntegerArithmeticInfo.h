@@ -32,7 +32,7 @@ enum WIAKind{
   WIAK_SUBSUME_FILL,
   WIAK_SUBSUME_INDEX,
   WIAK_NATURAL,
-  WIAK_ASSIGN,
+  WIAK_STORE,
   WIAK_VAR,
   WIAK_LIT,
   WIAK_LOAD
@@ -88,15 +88,19 @@ public:
     Operands(other.getOperands()) {}
    
  
-  virtual inline bool operator==(const WideningIntegerSolutionInfo &a); 
-
 
   unsigned getOpcode(void) const {
     return Opcode;
+
   }
   void setOpcode(unsigned Opcode_){
     Opcode = Opcode_;
-  }  
+  }
+
+  bool operator==(const WideningIntegerSolutionInfo &o){
+    return Node->getNodeId() == o.getNode()->getNodeId() &&
+            Kind == o.getKind();
+  } 
 
   
   short int getCost(void) const {
@@ -205,15 +209,7 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
       case WIAK_BINOP: return true;
       default: return false;
     } 
-  }
-  
-  
-  virtual inline bool operator==(const WideningIntegerSolutionInfo& a) override
-  {
-    return (isa<WIA_BINOP>(&a));
-      
-  }
-  
+  } 
   
 };
 
@@ -238,9 +234,6 @@ class WIA_FILL : public WideningIntegerSolutionInfo
       default: return false;
     } 
   }
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_FILL>(&a));
-  }
 };
 
 
@@ -263,11 +256,6 @@ class WIA_WIDEN : public WideningIntegerSolutionInfo
       case WIAK_WIDEN: return true;
       default: return false;
     } 
-  }
-
-  
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_WIDEN>(&a));
   }
 };
 
@@ -292,9 +280,6 @@ class WIA_WIDEN_GARBAGE : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_WIDEN_GARBAGE>(&a));
-  }
 };
 
 class WIA_NARROW : public WideningIntegerSolutionInfo
@@ -318,9 +303,6 @@ class WIA_NARROW : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_NARROW>(&a));
-  }
 };
 
 
@@ -345,9 +327,6 @@ class WIA_DROP_EXT : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_DROP_EXT>(&a));
-  }
 };
 
 
@@ -372,9 +351,6 @@ class WIA_DROP_LOCOPY : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_DROP_LOCOPY>(&a));
-  }
 };
 
 
@@ -399,9 +375,6 @@ class WIA_DROP_LOIGNORE : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_DROP_LOIGNORE>(&a));
-  }
 };
 
 
@@ -426,9 +399,6 @@ class WIA_EXTLO : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_EXTLO>(&a));
-  }
 };
 
 
@@ -453,9 +423,6 @@ class WIA_SUBSUME_FILL : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_SUBSUME_FILL>(&a));
-  }
 };
 
 
@@ -480,9 +447,6 @@ class WIA_SUBSUME_INDEX : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_SUBSUME_INDEX>(&a));
-  }
 };
 
 
@@ -509,9 +473,6 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_NATURAL>(&a));
-  }
 };
 
 class WIA_LOAD : public WideningIntegerSolutionInfo
@@ -535,9 +496,6 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_LOAD>(&a));
-  }
 };
 
 class WIA_UNOP : public WideningIntegerSolutionInfo
@@ -561,47 +519,9 @@ class WIA_UNOP : public WideningIntegerSolutionInfo
     } 
   }
   
-  virtual bool operator==(const WideningIntegerSolutionInfo& a) override {
-    return (isa<WIA_UNOP>(&a));
-  }
 };
 
 
-class WideningIntegerSolInfoBuilder {
-  public:
-  WideningIntegerSolutionInfo* build(WIAKind Kind){
-    switch(Kind){
-      default:
-        return new WideningIntegerSolutionInfo();
-      case WIAK_BINOP:
-        return new WIA_BINOP();
-      case WIAK_FILL:
-        return new WIA_FILL();
-      case WIAK_WIDEN:
-        return new WIA_WIDEN();
-      case WIAK_WIDEN_GARBAGE:
-        return new WIA_WIDEN_GARBAGE();
-      case WIAK_NARROW:
-        return new WIA_NARROW();
-      case WIAK_DROP_EXT:
-        return new WIA_DROP_EXT();
-      case WIAK_DROP_LOCOPY:
-        return new WIA_DROP_LOCOPY();
-      case WIAK_DROP_LOIGNORE:
-        return new WIA_DROP_LOIGNORE();
-      case WIAK_EXTLO:
-        return new WIA_EXTLO();
-      case WIAK_SUBSUME_FILL:
-        return new WIA_SUBSUME_FILL();
-      case WIAK_SUBSUME_INDEX:
-        return new WIA_SUBSUME_INDEX();
-      case WIAK_NATURAL:
-        return new WIA_NATURAL();
-
-    }
-  }
-
-};
 
 
 
@@ -610,4 +530,4 @@ class WideningIntegerSolInfoBuilder {
 } // namespace llvm;
 
 
-#endif // LLVM_ANALYSIS_UTILS_WIDENINGINTEGERARITHMETIC_H
+#endif // LLVM_CODEGEN_WIDENINGINTEGERARITHMETIC_H
