@@ -8,18 +8,26 @@
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/WideningIntegerArithmeticInfo.h"
+#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/TypeSize.h"
-#include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/Support/CodeGen.h"
+#include "llvm/Support/Debug.h"
 
-
+#define DEBUG_TYPE "OptExtensions"
+STATISTIC(NumSExtsDropped, "Number of ISD::SIGN_EXTEND nodes that were dropped"); 
+STATISTIC(NumZExtsDropped, "Number of ISD::ZERO_EXTEND nodes that were dropped");
+STATISTIC(NumAnyExtsDropped, "Number of ISD::ANY_EXTEND nodes that were dropped");
+STATISTIC(NumTruncatesDropped, "Number of ISD::TRUNCATE nodes that were dropped"); 
 using namespace llvm;
 
+namespace {
 
 class WideningIntegerArithmetic {
   SelectionDAG &DAG;
@@ -139,7 +147,19 @@ class WideningIntegerArithmetic {
     inline unsigned char getScalarSize(const EVT &VT) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
     void initOperatorsFillTypes();
+    void printNodeSols(SolutionSet Sols, SDNode *Node);
 };
+
+} // end anonymous namespace
+
+void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, SDNode *Node){
+  unsigned Opc = Node->getOpcode();
+  int Id = Node->getNodeId();
+  LLVM_DEBUG(dbgs() << "Printing Node Solutions with Opcode = " << Opc << "and Id = "<< Id << "\n");
+  for(auto Solution : Sols){
+    LLVM_DEBUG(dbgs() << "Printing Solution --> " << "\n" << Solution << "\n";
+  }
+}
 
 inline unsigned char WideningIntegerArithmetic::getScalarSize(const EVT &VT) const {
   return VT.getScalarSizeInBits(); // TODO check
@@ -337,7 +357,6 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
       assert(GeneratedSol->getCost() < RedudantNodeToDeleteCost);
       It = Solutions.erase(It);
       // TODO consider change data structure for Possible small optimization
-      // for std::find
     }
     It++;  
   }
@@ -425,7 +444,8 @@ void WideningIntegerArithmetic::solve(){
  
   SDValue Root = DAG.getRoot();
   setFillType(Root.getValueType(), Root.getValueType());
-  
+  initOperatorsFillTypes();
+
   for (SDNode &Node : DAG.allnodes()){
       if(!IsSolved(&Node)  && isInteger(&Node) ){ 
         visit_widening(&Node);  
@@ -794,12 +814,17 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   unsigned Opc = N0->getOpcode();
   auto ExprSolutions = AvailableSolutions[N0.getNode()->getNodeId()];
   SolutionSet Sols;
- 
+  switch(Node->getOpcode()){
+    case ISD::SIGN_EXTEND: ++NumSExtsDropped; break;
+    case ISD::ZERO_EXTEND: ++NumZExtsDropped; break;
+    case ISD::ANY_EXTEND: ++NumAnyExtsDropped; break;
+  }
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Opc,
       ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
       Width/*NewWidth*/, Solution->getCost(), Node);
+    
     Expr->setOperands(Solution->getOperands());
     Sols.push_back(Expr); 
   }
@@ -811,14 +836,17 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
 WideningIntegerArithmetic::SolutionSet 
   WideningIntegerArithmetic::visitDROP_LO_COPY(
                           SDNode *Node){
-  // TRUNCATE has only 1 operand
   SolutionSet Sols;
+  assert(Node->getOpcode() == llvm::ISD::TRUNCATE && 
+                              "Not an extension to drop here");  
+  // TRUNCATE has only 1 operand
   SDValue N0 = Node->getOperand(0);
   auto ExprSolutions = AvailableSolutions[N0.getNode()->getNodeId()];
   unsigned char TruncatedWidth = getScalarSize(Node->getValueType(0)); // TODO CHECK
   unsigned char NewWidth = getScalarSize(N0.getValueType());   
   // We simply drop the truncation and we will later see if it's needed.
-  unsigned Opc = N0->getOpcode(); 
+  unsigned Opc = N0->getOpcode();
+  NumTruncatesDropped++; 
   for(auto Sol : ExprSolutions){ 
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOCOPY(Opc,
       Sol->getFillType(), Sol->getFillTypeWidth(), TruncatedWidth, 
@@ -843,6 +871,7 @@ WideningIntegerArithmetic::visitDROP_LO_IGNORE(
   unsigned char NewWidth = getScalarSize(N0.getValueType());   
   // We simply drop the truncation and we will later see if it's needed.
   unsigned Opc = N0->getOpcode(); 
+  NumTruncatesDropped++; 
  
   // We simply drop the truncation and we will later see if it's needed.
   for(auto Sol : ExprSolutions){ 
@@ -1039,6 +1068,7 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
 
     // FillTypes are of the form op1 x op2 -> result
     // Stored in a tuple <op1, op2, result>
+    UnaryFillTypeSet Popcnt, Neg, Com;  // TODO maybe there are others too. 
     FillTypeSet AddFillTypes;
     AddFillTypes.insert(std::make_tuple(ANYTHING, ANYTHING, ANYTHING));
     
@@ -1060,48 +1090,98 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
     FillTypesMap[ISD::UDIV] = UDivFillTypes;
 
     FillTypeSet Eq, Ge, Geu, Gt, Gtu, Le, Leu, Lt, Ltu, Mod, Modu,
-                Mul, Mulu, Ne, Neg, Or, Popcnt, Rem,
+                Mul, Mulu, Ne, Or, Rem, Remu,
                 Quot, Shl, Shra, Shrl, Sub, Xor;
     Eq.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    Eq.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
+    Eq.insert(std::make_tuple(ZEROS, ZEROS, ZEROS)); 
+    FillTypesMap[ISD::CondCode::SETEQ + ISD::BUILTIN_OP_END] =  Eq;
 
-    FillTypesMap[ISD::CondCode::SETEQ] =  Eq;
     Ge.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::CondCode::SETGE + ISD::BUILTIN_OP_END] =  Ge;
+
     Geu.insert(std::make_tuple(SIGN, SIGN, SIGN));
     Geu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
-    Gt.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    
     Gtu.insert(std::make_tuple(SIGN, SIGN, ZEROS));
     Gtu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
-    Le.insert(std::make_tuple(SIGN, SIGN, SIGN));
+   
     Leu.insert(std::make_tuple(SIGN, SIGN, SIGN));
     Leu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
-    Lt.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    
     Ltu.insert(std::make_tuple(SIGN, SIGN, ZEROS));
     Ltu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
-    Mod.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    Modu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
-    Mul.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    
     Mulu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
+    // TODO what to do with Geu, Gtu, Leu, Ltu and Mulu ??   
+ 
+    Gt.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::CondCode::SETGT + ISD::BUILTIN_OP_END] =  Gt;
+    
+    Le.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::CondCode::SETLE + ISD::BUILTIN_OP_END] =  Le;
+
+    Lt.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::CondCode::SETLT + ISD::BUILTIN_OP_END] =  Lt;
+
+    Mod.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::SREM] = SDivFillTypes;
+    
+    Modu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
+    FillTypesMap[ISD::UREM] = SDivFillTypes;
+     
+    // MOD -> REMAINDER
+    // DIV -> QUOTIENT
+    
+    Quot.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    // TODO what is the ISD OF THE QUOTIENT??  FillTypesMap[ISD::] = SDivFillTypes;
+     
+    Mul.insert(std::make_tuple(SIGN, SIGN, SIGN)); // IF NOT OVERFLOW OCCURS
     FillTypesMap[ISD::MUL] = Mul;
     // TODO check ISD for MULU does not exist or it's a MULHU
     Ne.insert(std::make_tuple(SIGN, SIGN, ZEROS));
-    // unaryFillTypeSet on NEG
+    FillTypesMap[ISD::CondCode::SETNE + ISD::BUILTIN_OP_END] =  Ne;
+
     Or.insert(std::make_tuple(SIGN, SIGN, SIGN)); 
     Or.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
     Or.insert(std::make_tuple(ANYTHING, ANYTHING, ANYTHING));
     FillTypesMap[ISD::OR] = Or;
+   
+    // Unary FillTypes 
+    // TODO Popcnt is intrinsic in llvm what to do here? 
+    // CHeck intrinsics sd nodes and get popcnt  
+    Popcnt.insert(std::make_tuple(ZEROS, ZEROS));
+
+    // TODO what is Com??
+    Com.insert(std::make_tuple(SIGN, SIGN));
+    Com.insert(std::make_tuple(ANYTHING, ANYTHING));
+   
+    // TODO what is the ISD:Opcode of NEG ? 
+    Neg.insert(std::make_tuple(ANYTHING, ANYTHING));
     
-    // Popcnt unaryfillTypeSet
-    Quot.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    
     Rem.insert(std::make_tuple(SIGN, SIGN, SIGN));
+    FillTypesMap[ISD::SREM] = Or;
+   
+    Remu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS)); // TODO CHECK REMU
+    FillTypesMap[ISD::UREM] = Remu;
+     
     Shl.insert(std::make_tuple(ANYTHING, ZEROS, ANYTHING));
+    FillTypesMap[ISD::SHL] = Shl;
+
     Shra.insert(std::make_tuple(SIGN, ZEROS, SIGN));
+    FillTypesMap[ISD::SRA] = Shra;
+    
     Shrl.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
+    FillTypesMap[ISD::SRL] = Shrl;
+
     Sub.insert(std::make_tuple(ANYTHING, ANYTHING, ANYTHING));
+    FillTypesMap[ISD::SUB] = Sub;
+   
     Xor.insert(std::make_tuple(SIGN, SIGN, SIGN)); 
     Xor.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
     Xor.insert(std::make_tuple(ANYTHING, ANYTHING, ANYTHING));
-      
+    FillTypesMap[ISD::XOR] = Xor;
+       
 }
     
 inline bool WideningIntegerArithmetic::hasTypeGarbage(IntegerFillType fill){
