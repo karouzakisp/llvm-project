@@ -1,7 +1,7 @@
 #ifndef LLVM_CODEGEN_WIDENINGINTEGERARITHMETICINFO_H
 #define LLVM_CODEGEN_WIDENINGINTEGERARITHMETICINFO_H
 
-
+#include <iostream>
 #include "llvm/IR/Instruction.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
@@ -87,6 +87,7 @@ public:
     Node(other.getNode()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
    
+
  
 
   unsigned getOpcode(void) const {
@@ -189,6 +190,16 @@ public:
 
 }; // WideningIntegerSolutionInfo
 
+  std::ostream& operator<<(std::ostream &out, 
+                         WideningIntegerSolutionInfo const &Sol) {
+    out << "{\tOpcode: " << Sol.getOpcode() << '\n';
+    out << "\tFillType: " << Sol.getFillType() << '\n';
+    out << "\tFillTypeWidth: " << Sol.getFillTypeWidth() << '\n';
+    out << "\tOldWidth: " << Sol.getWidth() << '\n';
+    out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
+    out << "\tCost : "<< Sol.getCost() << '\n';
+    return out;
+  } 
 
 class WIA_BINOP : public WideningIntegerSolutionInfo
 {
@@ -292,7 +303,7 @@ class WIA_NARROW : public WideningIntegerSolutionInfo
             unsigned char Width_, unsigned char UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, FillType_ , FillTypeWidth , Width_, 
+        Opcode_, FillType_ , FillTypeWidth_ , Width_, 
         UpdatedWidth_, Cost_, WIAK_NARROW, Node_){}
 
   static inline bool classof(WIA_NARROW const *) { return true; }
