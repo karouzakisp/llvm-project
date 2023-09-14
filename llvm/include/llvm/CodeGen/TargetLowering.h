@@ -2810,6 +2810,14 @@ public:
     return isLoadExtLegal(LType, VT, LoadVT);
   }
 
+  /// TODO CHECK
+  /// Return true if any actual instruction that defines a value of type FromTy
+  /// implicitly sign-extends the value to ToTy in the result register.
+  // Targets must return false when FromTy >= ToTy.
+  virtual bool isSExtFree(Type *FromTy, Type *ToTy) const{
+    return false;
+  }
+
   /// Return true if any actual instruction that defines a value of type FromTy
   /// implicitly zero-extends the value to ToTy in the result register.
   ///
