@@ -1193,6 +1193,11 @@ bool RISCVTargetLowering::isZExtFree(SDValue Val, EVT VT2) const {
   return TargetLowering::isZExtFree(Val, VT2);
 }
 
+bool RISCVTargetLowering::isSExtFree(Type *FromTy, Type *ToTy) const {
+  // RV64I implicitly sign-extends 32-bit results in 64-bit registers.
+  return FromTy->isIntegerTy(32) && ToTy->isIntegerTy(64) && Subtarget.is64Bit();
+}
+
 bool RISCVTargetLowering::isSExtCheaperThanZExt(EVT SrcVT, EVT DstVT) const {
   return Subtarget.is64Bit() && SrcVT == MVT::i32 && DstVT == MVT::i64;
 }
