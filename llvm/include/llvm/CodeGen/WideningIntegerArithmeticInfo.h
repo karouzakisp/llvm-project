@@ -5,6 +5,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
 
@@ -35,7 +36,8 @@ enum WIAKind{
   WIAK_STORE,
   WIAK_VAR,
   WIAK_LIT,
-  WIAK_LOAD
+  WIAK_LOAD,
+  WIAK_UNKNOWN
 };
 
 
@@ -190,14 +192,14 @@ public:
 
 }; // WideningIntegerSolutionInfo
 
-  std::ostream& operator<<(std::ostream &out, 
+  inline raw_ostream &operator<<(raw_ostream &out, 
                          WideningIntegerSolutionInfo const &Sol) {
     out << "{\tOpcode: " << Sol.getOpcode() << '\n';
     out << "\tFillType: " << Sol.getFillType() << '\n';
     out << "\tFillTypeWidth: " << Sol.getFillTypeWidth() << '\n';
     out << "\tOldWidth: " << Sol.getWidth() << '\n';
     out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
-    out << "\tCost : "<< Sol.getCost() << '\n';
+    out << "\tCost : "<< Sol.getCost() << "}\n";
     return out;
   } 
 
@@ -503,6 +505,29 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
     switch(Base->getKind()){
       case WIAK_LOAD: return true;
+      default: return false;
+    } 
+  }
+  
+};
+
+class WIA_STORE : public WideningIntegerSolutionInfo
+{
+  public:
+  WIA_STORE() {}
+  ~WIA_STORE() {}
+  WIA_STORE(unsigned char Opcode_, IntegerFillType FillType_,
+            unsigned char FillTypeWidth_,
+            unsigned char Width_, unsigned char UpdatedWidth_, 
+            short int Cost_, SDNode *Node_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_STORE, Node_) {}
+
+  static inline bool classof(WIA_STORE const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_STORE: return true;
       default: return false;
     } 
   }
