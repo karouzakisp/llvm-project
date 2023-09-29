@@ -2,19 +2,16 @@
 ; RUN: llc -mtriple=riscv64 -verify-machineinstrs < %s \
 ; RUN:   | FileCheck -check-prefix=RV64I %s
 
-define i64 @test_load_and_cmp(i32 %a, i32 %b, i16 %c) nounwind {
+@gd = external global i16
+
+define i32 @test_load_and_cmp(i32 %a, i32 %b, i16 %c) nounwind {
 ; RV64I-LABEL: test_load_and_cmp:
 ; RV64I:       # %bb.0:
-; RV64I-NEXT:    xor a0, a0, a1
-; RV64I-NEXT:    sext.w a0, a0
-; RV64I-NEXT:    slli a1, a0, 3
-; RV64I-NEXT:    sub a0, a1, a0
+; RV64I-NEXT:    lui a0, %hi(gd)
+; RV64I-NEXT:    lh a0, %lo(gd)(a0)
+; RV64I-NEXT:    add a0, a2, a0
 ; RV64I-NEXT:    ret
-  %q = add i16 %c, 17
-  %q_ext = sext i16 %q to i32
-  %xored = xor i32 %a, %q_ext
-  %sexted = sext i32 %xored to i64
-  %muled = mul nuw nsw i64 %sexted, 7
-  ret i64 %muled;
+  %q = add i32 %a, %b
+  ret i32 %q;
 }
 
