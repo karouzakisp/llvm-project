@@ -7,13 +7,7 @@
 	.type	test_load_and_cmp,@function
 test_load_and_cmp:                      # @test_load_and_cmp
 # %bb.0:
-	addiw	a2, a2, 17
-	slli	a2, a2, 48
-	srai	a2, a2, 48
-	xor	a0, a0, a2
-	sext.w	a0, a0
-	slli	a1, a0, 3
-	sub	a0, a1, a0
+	addw	a0, a0, a1
 	ret
 .Lfunc_end0:
 	.size	test_load_and_cmp, .Lfunc_end0-test_load_and_cmp
