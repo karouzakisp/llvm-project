@@ -1,14 +1,12 @@
 	.text
 	.attribute	4, 16
 	.attribute	5, "rv64i2p0"
-	.file	"rv64_wia1.ll"
+	.file	"rv64_wia2.ll"
 	.globl	test_load_and_cmp               # -- Begin function test_load_and_cmp
 	.p2align	2
 	.type	test_load_and_cmp,@function
 test_load_and_cmp:                      # @test_load_and_cmp
 # %bb.0:
-	lui	a1, %hi(gd)
-	lh	a1, %lo(gd)(a1)
 	xor	a0, a0, a1
 	slli	a0, a0, 48
 	srai	a0, a0, 48

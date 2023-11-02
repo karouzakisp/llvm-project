@@ -123,11 +123,12 @@ class WideningIntegerArithmetic {
     SolutionSet visitSUBSUME_FILL(SDNode *Node);
     SolutionSet visitSUBSUME_INDEX(SDNode *Node);
     SolutionSet visitNATURAL(SDNode *Node);
+    SolutionSet visitCONSTANT(SDNode *Node);
 
 
     std::vector<unsigned char> IntegerSizes = {8, 16, 32, 64};
 
-    unsigned char getTargetWidth();
+    unsigned int getTargetWidth();
 
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
@@ -293,7 +294,7 @@ WideningIntegerArithmetic::getNodeKind(SDNode *Node){
   else if(IsStore(Opcode) )
     return WIAK_STORE;
   else // IsVar
-    return WIAK_VAR;
+    return WIAK_UNKNOWN;
    
 }
 
@@ -320,6 +321,9 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
   }
   else if(IsTruncate(Opcode)){ 
     return visitDROP_TRUNC(Node);
+  }
+  else if(Opcode == ISD::Constant){
+    return visitCONSTANT(Node);
   }
   else{
     // default solution so we can initialize all the nodes with some solution set.
@@ -520,7 +524,8 @@ WideningIntegerArithmetic::closure(SDNode *Node){
       if(Added)
         Changed = true;
     }
-    PossibleSolutions.clear();  // TODO how to optimize this ? 
+    PossibleSolutions.clear();  // TODO how to optimize this ?
+                                // Implement closure in each visit? 
   }while(Changed == true );
   return Sols;
 }
@@ -587,6 +592,17 @@ WideningIntegerArithmetic::visitUNOP(SDNode *Node){
   // call closure if multiple FillTypes or Multiple Unop Widths
   return tryClosure(Node, Changed);  
 }
+
+WideningIntegerArithmetic::SolutionSet 
+WideningIntegerArithmetic::visitCONSTANT(SDNode *Node){
+  SolutionSet Sols;
+  ConstantSDNode *CN = cast<ConstantSDNode>(Node);
+  unsigned bitWidth = CN->getConstantIntValue()->getBitWidth();
+  auto Sol = new WIA_CONSTANT(Node->getOpcode(), ExtensionChoice,
+    bitWidth, getTargetWidth(), getTargetWidth(), 0, Node);
+  Sols.push_back(Sol);
+  return Sols;
+}
   
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::visitSTORE(SDNode *Node){
@@ -633,7 +649,8 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
       return Sols;
   }
   unsigned char Width = getScalarSize(MemoryVT); 
-  unsigned char FillTypeWidth = getTargetWidth() - Width; 
+  unsigned char FillTypeWidth = getTargetWidth() - Width;
+  dbgs() << "--------------------------------------------------------- getTargetWidth is " << getTargetWidth() << '\n'; 
   auto WIALoad = new WIA_LOAD(Node->getOpcode(), FillType, FillTypeWidth,
                 Width, getTargetWidth(), 0, Node);  
   Sols.push_back(WIALoad);
@@ -1032,7 +1049,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitNATURAL(
   return Sols;
 }
 
-unsigned char WideningIntegerArithmetic::getTargetWidth(){
+unsigned int WideningIntegerArithmetic::getTargetWidth(){
   const auto &TargetTriple = DAG.getTarget().getTargetTriple();
   switch (TargetTriple.getArch()){
     default: break;
