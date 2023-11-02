@@ -780,6 +780,7 @@ void SelectionDAGISel::CodeGenAndEmitDAG() {
   {
     NamedRegionTimer T("combine1", "DAG Combining 1", GroupName,
                        GroupDescription, TimePassesIsEnabled);
+    CurDAG->OptExtensions(OptLevel);
     CurDAG->Combine(BeforeLegalizeTypes, AA, OptLevel);
   }
 
@@ -826,7 +827,6 @@ void SelectionDAGISel::CodeGenAndEmitDAG() {
     {
       NamedRegionTimer T("combine_lt", "DAG Combining after legalize types",
                          GroupName, GroupDescription, TimePassesIsEnabled);
-      CurDAG->OptExtensions(OptLevel);
       CurDAG->Combine(AfterLegalizeTypes, AA, OptLevel);
     }
 

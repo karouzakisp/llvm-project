@@ -399,7 +399,7 @@ enum WIAKind{
   WIAK_SUBSUME_INDEX,
   WIAK_NATURAL,
   WIAK_STORE,
-  WIAK_VAR,
+  WIAK_CONSTANT,
   WIAK_LIT,
   WIAK_LOAD,
   WIAK_UNKNOWN
@@ -559,7 +559,8 @@ public:
 
   inline raw_ostream &operator<<(raw_ostream &out, 
                          WideningIntegerSolutionInfo const &Sol) {
-    out << "{\tOpcode: " << OpcodesToStr[Sol.getOpcode()]; 
+    out << "\tOpcode: " << OpcodesToStr[Sol.getOpcode()];
+    out << "\tOpcode in number: << " << Sol.getOpcode(); 
     out << "\tFillType: " << Sol.getFillType() << '\n';
     out << "\tFillTypeWidth: " << Sol.getFillTypeWidth() << '\n';
     out << "\tOldWidth: " << Sol.getWidth() << '\n';
@@ -910,12 +911,35 @@ class WIA_UNOP : public WideningIntegerSolutionInfo
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_NATURAL, Node_) {}
+        UpdatedWidth_, Cost_, WIAK_UNOP, Node_) {}
 
   static inline bool classof(WIA_UNOP const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
     switch(Base->getKind()){
       case WIAK_UNOP: return true;
+      default: return false;
+    } 
+  }
+  
+};
+
+class WIA_CONSTANT : public WideningIntegerSolutionInfo
+{
+  public:
+  WIA_CONSTANT() {}
+  ~WIA_CONSTANT() {}
+  WIA_CONSTANT(unsigned char Opcode_, IntegerFillType FillType_,
+            unsigned char FillTypeWidth_,
+            unsigned char Width_, unsigned char UpdatedWidth_, 
+            short int Cost_, SDNode *Node_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_CONSTANT, Node_) {}
+
+  static inline bool classof(WIA_CONSTANT const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_CONSTANT: return true;
       default: return false;
     } 
   }
