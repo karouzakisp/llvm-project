@@ -303,29 +303,37 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
   SolutionSet Solutions ;
   unsigned Opcode = Node->getOpcode();
   
-  dbgs() << "Opcode is " << Opcode << "\n"; 
+  dbgs() << "Opcode is " << Opcode; 
   if(IsBinop(Opcode)){
+    dbgs() << " and Visiting Binop..." << "\n"; 
     return visitBINOP(Node);
   }
   else if(IsUnop(Opcode)){
+    dbgs() << " and Visiting Unop..." << "\n"; 
     return visitUNOP(Node);
   }
   else if(IsLoad(Opcode)){
+    dbgs() << " and Visiting Load..." << "\n"; 
     return visitLOAD(Node);
   }
   else if(IsStore(Opcode)){
+    dbgs() << " and Visting Store..." << "\n"; 
     return visitSTORE(Node);
   }
   else if(IsExtension(Opcode)){
+    dbgs() << " and Visiting Extension..." << "\n"; 
     return visitDROP_EXT(Node);
   }
   else if(IsTruncate(Opcode)){ 
+    dbgs() << " and Visiting Truncation .." << "\n"; 
     return visitDROP_TRUNC(Node);
   }
   else if(Opcode == ISD::Constant){
+    dbgs() << " and Visting Constant " << Opcode << "\n"; 
     return visitCONSTANT(Node);
   }
   else{
+    dbgs() << "Opcode is " << Opcode << "\n"; 
     // default solution so we can initialize all the nodes with some solution set.
     auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 0, 
                 getTargetWidth(), /* TODO CHECK */getTargetWidth() , 
@@ -353,9 +361,11 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   }
   dbgs() << "Printing Node Solutions with opc!! : " << OpcodesToStr[Node->getOpcode()] << "\n";
   auto CalcSolutions = visitInstruction(Node);
+  solvedNodes[Node] = true; 
   if(CalcSolutions.size() > 0){
     printNodeSols(CalcSolutions, Node);
-    solvedNodes[Node] = true; 
+  }else{
+    dbgs() << "This node does not have any solutions" << "\n";
   }
   return CalcSolutions;
 }
@@ -919,8 +929,10 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     case ISD::AssertSext: ++NumSExtsDropped; break;      
     case ISD::AssertZext: ++NumZExtsDropped; break;
   }
+  dbgs() << "Trying to drop extension in Solutions" << std::endl; 
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
+    dbgs() << "Drop extension in Solutions" << std::endl; 
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Opc,
       ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
       Width/*NewWidth*/, Solution->getCost(), Node);
