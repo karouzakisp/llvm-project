@@ -484,14 +484,14 @@ public:
     FillType = FillType_; 
   }
 
-  unsigned char getWidth(void) const {
+  unsigned getWidth(void) const {
     return Width;
   }
   void setWidth(unsigned char Width_){
     Width = Width_;
   }
   
-  unsigned char getUpdatedWidth(void) const {
+  unsigned getUpdatedWidth(void) const {
     return UpdatedWidth;
   }
 
