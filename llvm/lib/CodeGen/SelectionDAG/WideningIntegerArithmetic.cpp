@@ -549,18 +549,12 @@ WideningIntegerArithmetic::closure(SDNode *Node){
     dbgs() << "Adding Possible Solutions size is  " << PossibleSolutions.size() << '\n';
     for(auto PossibleSol : PossibleSolutions){
       dbgs() << "Before Adding Possible Sol --> " << '\n';
-      printNodeSols(AvailableSolutions[Node], Node) 
-      if(PossibleSol == NULL){
-        dbgs() << "Error here.." << '\n';
-      }
-      else if(PossibleSol == NULL){
-        dbgs() << "Error here.." << '\n';
-      }
+      printNodeSols(AvailableSolutions[Node], Node); 
       bool Added = addNonRedudant(AvailableSolutions[Node], PossibleSol);
       if(Added){
         Changed = true;
         dbgs() << "After Adding Possible Sol --> " << '\n';
-        printNodeSols(AvailableSolutions[Node], Node)
+        printNodeSols(AvailableSolutions[Node], Node);
       } 
     }
     dbgs() << "Clear all the possible solutions " << '\n';
