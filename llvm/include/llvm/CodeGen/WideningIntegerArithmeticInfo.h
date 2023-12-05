@@ -456,9 +456,11 @@ public:
     Opcode = Opcode_;
   }
 
+
   bool operator==(const WideningIntegerSolutionInfo &o){
-    return Node->getNodeId() == o.getNode()->getNodeId() &&
-            Kind == o.getKind();
+    return Kind == o.getKind() && Opcode == o.getOpcode() && 
+           Cost == o.getCost() && Width == o.getWidth() &&
+           UpdatedWidth == o.getUpdatedWidth();
   } 
 
   
@@ -530,16 +532,17 @@ public:
   // Returns 0 if no one is redudant
   // Returns -1 if b is redundant given solution this
   // Returns 1 if "this" is redudant given solution b
-  inline int IsRedudant(const WideningIntegerSolutionInfo *b){
+  inline int IsRedudant(const WideningIntegerSolutionInfo &b){
 
-    int n1 = Width;
+    int n1 = FillTypeWidth;
     int c1 = Cost;
-    dbgs() << "Before accessing SolInfo" << '\n';
-    int n2 = b->getWidth();
-    int c2 = b->getCost();
-    dbgs() << "After accessing SolInfo" << '\n';
-    
-  
+    int n2 = b.getFillTypeWidth();
+    int c2 = b.getCost();
+ 
+    if((*this) == b){
+      return 0;
+    }
+
     if(n1 >= n2  && c1 >= c2 )
       return 1;
     if(n2 >= n1 && c2 >= c1 )
