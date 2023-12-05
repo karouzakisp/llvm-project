@@ -159,7 +159,7 @@ void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, SDNode *Node){
   int i = 0;
   dbgs() << "Found many Solutions ..-->\n";
   for(WideningIntegerSolutionInfo *Solution : Sols){
-    dbgs() << "----- Solution " << i << "\n" << (*Solution) << "\n";
+    dbgs() << "----- Solution " << ++i << "\n" << (*Solution) << "\n";
   }
 }
 
@@ -386,21 +386,29 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
                     WideningIntegerSolutionInfo* GeneratedSol){
   bool WasRedudant = false;
   int RedudantNodeToDeleteCost = INT_MAX;
+  dbgs() << "Begin Add Non Redudant -> " << '\n';
   for(auto It = Solutions.begin(); It != Solutions.end(); ){
-    int ret = (*It)->IsRedudant(GeneratedSol);
+    int ret = (*It)->IsRedudant((*GeneratedSol));
     if(ret == -1 ){ // GeneratedSol is redudant
       WasRedudant = true; 
+      It++;  
     }else if(ret == 1){ // Sol is redudant
       assert(GeneratedSol->getCost() < RedudantNodeToDeleteCost);
+      dbgs() << "Check .... Deleting it --> " << (**It) << '\n';
       It = Solutions.erase(It);
       // TODO consider change data structure for Possible small optimization
+    }else{ // ret == 0 no redudant found
+      It++;
     }
-    It++;  
   }
+  dbgs() << "End Add Non Redudant -> " << '\n';
   if(!WasRedudant){
+    dbgs() << "Adding Solution --> " << *GeneratedSol << '\n';
     Solutions.push_back(GeneratedSol);
+    dbgs() << "Returning True --> " << '\n';
     return true;
   }
+  dbgs() << "Returning False --> " << '\n';
   return false;
 }
 
@@ -536,37 +544,37 @@ WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::closure(SDNode *Node){
   auto Sols = AvailableSolutions[Node];
   bool Changed;
+  int i = 0;
   do{
     Changed = false;
-    dbgs() << "Visit Fill" << '\n';
     visitFILL(Node);
-    dbgs() << "Visit Widen" << '\n';
     visitWIDEN(Node);
-    dbgs() << "Visit Garbage widen" << '\n';
     visitWIDEN_GARBAGE(Node); 
-    dbgs() << "Visit Narrow Widen" << '\n';
     visitNARROW(Node);
-    dbgs() << "Adding Possible Solutions size is  " << PossibleSolutions.size() << '\n';
+    dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << PossibleSolutions.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n';
     for(auto PossibleSol : PossibleSolutions){
       dbgs() << "Before Adding Possible Sol --> " << '\n';
-      printNodeSols(AvailableSolutions[Node], Node) 
+      printNodeSols(AvailableSolutions[Node], Node); 
       if(PossibleSol == NULL){
         dbgs() << "Error here.." << '\n';
       }
       else if(PossibleSol == NULL){
         dbgs() << "Error here.." << '\n';
       }
+      dbgs() << "Trying to add pos sol if non redudant --> " << *PossibleSol << '\n';
       bool Added = addNonRedudant(AvailableSolutions[Node], PossibleSol);
       if(Added){
         Changed = true;
         dbgs() << "After Adding Possible Sol --> " << '\n';
-        printNodeSols(AvailableSolutions[Node], Node)
+        printNodeSols(AvailableSolutions[Node], Node);
       } 
     }
     dbgs() << "Clear all the possible solutions " << '\n';
     PossibleSolutions.clear();  // TODO how to optimize this ?
-                                // Implement closure in each visit? 
+                                // Implement closure in each visit?
+    dbgs() << "Possible Solution size is --> " << PossibleSolutions.size() << '\n';; 
   }while(Changed == true );
+  dbgs() << "Returning all the Solutions after non redudant" << '\n';
   return Sols;
 }
 
@@ -678,7 +686,7 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
       break; 
     case ISD::EXTLOAD: 
       FillType = IntegerFillType::ANYTHING;
-      break; 
+      break;
     case ISD::SEXTLOAD: 
       FillType = IntegerFillType::SIGN;
       break;
@@ -766,7 +774,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
       // and there is a LegalOperation for that Opcode
       unsigned char UpdatedWidth = w1;
       unsigned char Cost = leftSolution->getCost() + rightSolution->getCost();
-      unsigned char FillTypeWidth = getTargetWidth() - UpdatedWidth; 
+      unsigned char FillTypeWidth = getScalarSize(Node->getValueType(0)); 
                     // this Target of this Binary operator of the form
                     // width1 x width2 = newWidth
                     // for example on rv64 we have addw
