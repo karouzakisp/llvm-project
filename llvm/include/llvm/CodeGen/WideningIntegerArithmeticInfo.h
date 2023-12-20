@@ -540,7 +540,7 @@ public:
     int c2 = b.getCost();
  
     if((*this) == b){
-      return 0;
+      return -1;
     }
 
     if(n1 >= n2  && c1 >= c2 )
