@@ -343,7 +343,8 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
     dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
     dbgs() << "Opcode str is " << OpcodesToStr[Opcode] << "\n"; 
     // default solution so we can initialize all the nodes with some solution set.
-    auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 0, 
+    auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 
+                0, 
                 getTargetWidth(), /* TODO CHECK */getTargetWidth() , 
                 0, WIAK_UNKNOWN, Node);
     Solutions.push_back(Sol); 
@@ -594,7 +595,6 @@ WideningIntegerArithmetic::getOperandFillTypes(SDNode *Node){
         auto N0 = Node->getOperand(0);
         auto N1 = Node->getOperand(1);
         if(DAG.computeOverflowKind(N0, N1 ) == SelectionDAG::OFK_Never){
-          Set.insert(std::make_tuple(SIGN, SIGN, SIGN));
           Set.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
         }
       }
@@ -719,7 +719,9 @@ WideningIntegerArithmetic::mayOverflow(SDNode *Node){
   }
 } 
  
- 
+
+
+// check IsRedudant uses fillTypeWidth 
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::visitBINOP(SDNode* Node){
@@ -734,13 +736,20 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
                                               AvailableSolutions[N0];
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
                                               AvailableSolutions[N1];
-
+  
   unsigned Opcode = Node->getOpcode();
+  // TODO check
+  WideningIntegerSolutionInfo *defaultSol = new WIA_BINOP(Opcode, ExtensionChoice, getScalarSize(Node->getValueType(0)),
+     /* OldWidth*/ getScalarSize(N0->getValueType(0)), 
+     getTargetWidth() , /* Cost */ 0, Node); 
+  AvailableSolutions[Node].push_back(defaultSol);
+
   dbgs() << "Operand 0 is --> " << OpcodesToStr[N0->getOpcode()]<< "\n";
   dbgs() << "Operand 1 is --> " << OpcodesToStr[N1->getOpcode()]<< "\n";
   dbgs() << "Operand 0 Solutions Size is --> " << LeftSols.size() << "\n";
   dbgs() << "Operand 1 Solutions Size is --> " << RightSols.size() << "\n";
   FillTypeSet OperandFillTypes = getOperandFillTypes(Node);
+  LLVMContext &Ctx = *DAG.getContext();
   // A function that combines solutions from operands left and right
   for (WideningIntegerSolutionInfo *leftSolution : LeftSols){
     for(WideningIntegerSolutionInfo *rightSolution : RightSols){
@@ -760,13 +769,14 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
       if(w1 != w2)
         continue;
       dbgs() << "The widths are the same and we continue--> " << w1 << "\n";
-      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), w1); 
+      EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
       if(!TLI.isOperationLegal(Opcode, NewVT))
         continue;
       dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n";
       // w1 x w2 --> w all widths are the same at this point
       // and there is a LegalOperation for that Opcode
       unsigned char UpdatedWidth = w1;
+
       unsigned char Cost = leftSolution->getCost() + rightSolution->getCost();
       unsigned char FillTypeWidth = getScalarSize(Node->getValueType(0)); 
                     // this Target of this Binary operator of the form
@@ -1124,7 +1134,7 @@ unsigned int WideningIntegerArithmetic::getTargetWidth(){
     
 
   }
-  return 0;
+  return 64;
 }
  
 
