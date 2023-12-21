@@ -12,8 +12,14 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Transforms/Utils/FPCorr.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/TargetSelect.h"
+
 #include <mpfr.h>
 #include <mpreal.h>
+#include <cassert>
+
 
 using namespace llvm;
 
@@ -65,13 +71,39 @@ void visitInstructions(Instruction *I){
   }
 }
 
-PreservedAnalyses FPCorrPass::run(Function &F,
-                                      FunctionAnalysisManager &AM) {
-  for (inst_iterator It = inst_begin(F), E = inst_end(F); It != E; ++It){
+void getAllExpressions(Function &F){
+	
+	for (inst_iterator It = inst_begin(F), E = inst_end(F); It != E; ++It){
     Instruction *I = &*It;
     if(isFloatingPointOperation(I)){     
       visitInstructions(I); 
     }            
   }   
+
+}
+
+double executeFPFunction(Function &F){
+	Function *VisitedF = &F;
+/*
+	Type *RetTy = VisitedF->getReturnType();
+	assert(RetTy->isFloatingPointTy() && "Function does not return Floating Point Type!");
+	LLVMContext &Ctx = VisitedF->getContext();
+
+	FunctionType *FTy = VisitedF->getFunctionType();
+
+	std::unique_ptr<Module> module = std::make_unique<Module>("CallFunctionModule", Ctx);
+	FunctionCallee callee = module->getOrInsertFunction(VisitedF->getName(), FTy);
+	
+	InitializeNativeTarget();
+	InitializeNativeTargetAsmPrinter();
+	ExecutionEngine *EE = EngineBuilder(std::move(module)).create();
+*/	
+	return 0;
+}
+
+
+PreservedAnalyses FPCorrPass::run(Function &F,
+                                      FunctionAnalysisManager &AM) {
+ 	 
   return PreservedAnalyses::all();
 }
