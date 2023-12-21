@@ -174,6 +174,19 @@ define i32 @test4(i32 %X) {
   ret i32 %cond
 }
 
+define i32 @test4_disjoint(i32 %X) {
+; CHECK-LABEL: @test4_disjoint(
+; CHECK-NEXT:    [[CMP:%.*]] = icmp slt i32 [[X:%.*]], 0
+; CHECK-NEXT:    [[OR:%.*]] = or disjoint i32 [[X]], -2147483648
+; CHECK-NEXT:    [[COND:%.*]] = select i1 [[CMP]], i32 [[X]], i32 [[OR]]
+; CHECK-NEXT:    ret i32 [[COND]]
+;
+  %cmp = icmp slt i32 %X, 0
+  %or = or disjoint i32 %X, -2147483648
+  %cond = select i1 %cmp, i32 %X, i32 %or
+  ret i32 %cond
+}
+
 ; Same as above, but the compare isn't canonical
 define i32 @test4noncanon(i32 %X) {
 ; CHECK-LABEL: @test4noncanon(
@@ -192,6 +205,16 @@ define i32 @test5(i32 %X) {
 ;
   %cmp = icmp slt i32 %X, 0
   %or = or i32 %X, -2147483648
+  %cond = select i1 %cmp, i32 %or, i32 %X
+  ret i32 %cond
+}
+
+define i32 @test5_disjoint(i32 %X) {
+; CHECK-LABEL: @test5_disjoint(
+; CHECK-NEXT:    ret i32 [[X:%.*]]
+;
+  %cmp = icmp slt i32 %X, 0
+  %or = or disjoint i32 %X, -2147483648
   %cond = select i1 %cmp, i32 %or, i32 %X
   ret i32 %cond
 }
@@ -227,6 +250,16 @@ define i32 @test8(i32 %X) {
   ret i32 %cond
 }
 
+define i32 @test8_disjoint(i32 %X) {
+; CHECK-LABEL: @test8_disjoint(
+; CHECK-NEXT:    ret i32 [[X:%.*]]
+;
+  %cmp = icmp sgt i32 %X, -1
+  %or = or disjoint i32 %X, -2147483648
+  %cond = select i1 %cmp, i32 %X, i32 %or
+  ret i32 %cond
+}
+
 define i32 @test9(i32 %X) {
 ; CHECK-LABEL: @test9(
 ; CHECK-NEXT:    [[OR:%.*]] = or i32 [[X:%.*]], -2147483648
@@ -234,6 +267,19 @@ define i32 @test9(i32 %X) {
 ;
   %cmp = icmp sgt i32 %X, -1
   %or = or i32 %X, -2147483648
+  %cond = select i1 %cmp, i32 %or, i32 %X
+  ret i32 %cond
+}
+
+define i32 @test9_disjoint(i32 %X) {
+; CHECK-LABEL: @test9_disjoint(
+; CHECK-NEXT:    [[CMP:%.*]] = icmp sgt i32 [[X:%.*]], -1
+; CHECK-NEXT:    [[OR:%.*]] = or disjoint i32 [[X]], -2147483648
+; CHECK-NEXT:    [[COND:%.*]] = select i1 [[CMP]], i32 [[OR]], i32 [[X]]
+; CHECK-NEXT:    ret i32 [[COND]]
+;
+  %cmp = icmp sgt i32 %X, -1
+  %or = or disjoint i32 %X, -2147483648
   %cond = select i1 %cmp, i32 %or, i32 %X
   ret i32 %cond
 }
@@ -1094,9 +1140,7 @@ define i8 @select_eq_xor_recursive(i8 %a, i8 %b) {
 ; CHECK-LABEL: @select_eq_xor_recursive(
 ; CHECK-NEXT:    [[XOR:%.*]] = xor i8 [[A:%.*]], [[B:%.*]]
 ; CHECK-NEXT:    [[INV:%.*]] = xor i8 [[XOR]], -1
-; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[A]], [[B]]
-; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 -1, i8 [[INV]]
-; CHECK-NEXT:    ret i8 [[SEL]]
+; CHECK-NEXT:    ret i8 [[INV]]
 ;
   %xor = xor i8 %a, %b
   %inv = xor i8 %xor, -1
@@ -1110,9 +1154,7 @@ define i8 @select_eq_xor_recursive2(i8 %a, i8 %b) {
 ; CHECK-NEXT:    [[XOR:%.*]] = xor i8 [[A:%.*]], [[B:%.*]]
 ; CHECK-NEXT:    [[INV:%.*]] = xor i8 [[XOR]], -1
 ; CHECK-NEXT:    [[ADD:%.*]] = add i8 [[INV]], 10
-; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[A]], [[B]]
-; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 9, i8 [[ADD]]
-; CHECK-NEXT:    ret i8 [[SEL]]
+; CHECK-NEXT:    ret i8 [[ADD]]
 ;
   %xor = xor i8 %a, %b
   %inv = xor i8 %xor, -1
@@ -1162,9 +1204,7 @@ define i8 @select_eq_and_recursive(i8 %a) {
 ; CHECK-NEXT:    [[NEG:%.*]] = sub i8 0, [[A:%.*]]
 ; CHECK-NEXT:    [[AND:%.*]] = and i8 [[NEG]], [[A]]
 ; CHECK-NEXT:    [[ADD:%.*]] = add i8 [[AND]], 1
-; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[A]], 0
-; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 1, i8 [[ADD]]
-; CHECK-NEXT:    ret i8 [[SEL]]
+; CHECK-NEXT:    ret i8 [[ADD]]
 ;
   %neg = sub i8 0, %a
   %and = and i8 %neg, %a
@@ -1194,16 +1234,40 @@ define i8 @select_eq_and_recursive_propagates_poison(i8 %a, i8 %b) {
 
 define i8 @select_eq_xor_recursive_allow_refinement(i8 %a, i8 %b) {
 ; CHECK-LABEL: @select_eq_xor_recursive_allow_refinement(
-; CHECK-NEXT:    [[XOR1:%.*]] = add i8 [[A:%.*]], [[B:%.*]]
-; CHECK-NEXT:    [[XOR2:%.*]] = xor i8 [[A]], [[XOR1]]
-; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[B]], 0
-; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 [[XOR2]], i8 0
-; CHECK-NEXT:    ret i8 [[SEL]]
+; CHECK-NEXT:    ret i8 0
 ;
   %xor1 = add i8 %a, %b
   %xor2 = xor i8 %a, %xor1
   %cmp = icmp eq i8 %b, 0
   %sel = select i1 %cmp, i8 %xor2, i8 0
+  ret i8 %sel
+}
+
+define i8 @select_eq_mul_absorber(i8 %x, i8 noundef %y) {
+; CHECK-LABEL: @select_eq_mul_absorber(
+; CHECK-NEXT:    [[ADD:%.*]] = add i8 [[X:%.*]], -1
+; CHECK-NEXT:    [[MUL:%.*]] = mul i8 [[ADD]], [[Y:%.*]]
+; CHECK-NEXT:    ret i8 [[MUL]]
+;
+  %cmp = icmp eq i8 %x, 1
+  %add = add i8 %x, -1
+  %mul = mul i8 %add, %y
+  %sel = select i1 %cmp, i8 0, i8 %mul
+  ret i8 %sel
+}
+
+define i8 @select_eq_mul_not_absorber(i8 %x, i8 noundef %y) {
+; CHECK-LABEL: @select_eq_mul_not_absorber(
+; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[X:%.*]], 0
+; CHECK-NEXT:    [[ADD:%.*]] = add i8 [[X]], -1
+; CHECK-NEXT:    [[MUL:%.*]] = mul i8 [[ADD]], [[Y:%.*]]
+; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 0, i8 [[MUL]]
+; CHECK-NEXT:    ret i8 [[SEL]]
+;
+  %cmp = icmp eq i8 %x, 0
+  %add = add i8 %x, -1
+  %mul = mul i8 %add, %y
+  %sel = select i1 %cmp, i8 0, i8 %mul
   ret i8 %sel
 }
 
@@ -1361,6 +1425,21 @@ define i8 @replace_false_op_eq_shl_or(i8 %x) {
   %eq0 = icmp eq i8 %x, -1
   %shl = shl i8 %x, 3
   %or = or i8 %x, %shl
+  %sel = select i1 %eq0, i8 -1, i8 %or
+  ret i8 %sel
+}
+
+define i8 @replace_false_op_eq_shl_or_disjoint(i8 %x) {
+; CHECK-LABEL: @replace_false_op_eq_shl_or_disjoint(
+; CHECK-NEXT:    [[EQ0:%.*]] = icmp eq i8 [[X:%.*]], -1
+; CHECK-NEXT:    [[SHL:%.*]] = shl i8 [[X]], 3
+; CHECK-NEXT:    [[OR:%.*]] = or disjoint i8 [[X]], [[SHL]]
+; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[EQ0]], i8 -1, i8 [[OR]]
+; CHECK-NEXT:    ret i8 [[SEL]]
+;
+  %eq0 = icmp eq i8 %x, -1
+  %shl = shl i8 %x, 3
+  %or = or disjoint i8 %x, %shl
   %sel = select i1 %eq0, i8 -1, i8 %or
   ret i8 %sel
 }
@@ -1633,4 +1712,28 @@ define i8 @select_xor_cmp_unmatched_operands(i8 %0, i8 %1, i8 %c) {
   %4 = xor i8 %1, %c
   %5 = select i1 %3, i8 0, i8 %4
   ret i8 %5
+}
+
+define i8 @select_or_eq(i8 %x, i8 %y) {
+; CHECK-LABEL: @select_or_eq(
+; CHECK-NEXT:    [[OR:%.*]] = or i8 [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    ret i8 [[OR]]
+;
+  %cmp = icmp eq i8 %x, %y
+  %or = or i8 %x, %y
+  %sel = select i1 %cmp, i8 %x, i8 %or
+  ret i8 %sel
+}
+
+define i8 @select_or_disjoint_eq(i8 %x, i8 %y) {
+; CHECK-LABEL: @select_or_disjoint_eq(
+; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i8 [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    [[OR:%.*]] = or disjoint i8 [[X]], [[Y]]
+; CHECK-NEXT:    [[SEL:%.*]] = select i1 [[CMP]], i8 [[X]], i8 [[OR]]
+; CHECK-NEXT:    ret i8 [[SEL]]
+;
+  %cmp = icmp eq i8 %x, %y
+  %or = or disjoint i8 %x, %y
+  %sel = select i1 %cmp, i8 %x, i8 %or
+  ret i8 %sel
 }

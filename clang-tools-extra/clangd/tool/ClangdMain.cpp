@@ -29,11 +29,13 @@
 #include "support/ThreadCrashReporter.h"
 #include "support/ThreadsafeFS.h"
 #include "support/Trace.h"
+#include "clang/Basic/Stack.h"
 #include "clang/Format/Format.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
@@ -273,15 +275,6 @@ opt<bool> ImportInsertions{
     init(CodeCompleteOptions().ImportInsertions),
 };
 
-opt<bool> IncludeCleanerStdlib{
-    "include-cleaner-stdlib",
-    cat(Features),
-    desc("Apply include-cleaner analysis to standard library headers "
-         "(immature!)"),
-    init(false),
-    Hidden,
-};
-
 opt<bool> HeaderInsertionDecorators{
     "header-insertion-decorators",
     cat(Features),
@@ -317,7 +310,7 @@ RetiredFlag<bool> CrossFileRename("cross-file-rename");
 RetiredFlag<std::string> ClangTidyChecks("clang-tidy-checks");
 RetiredFlag<bool> InlayHints("inlay-hints");
 RetiredFlag<bool> FoldingRanges("folding-ranges");
-
+RetiredFlag<bool> IncludeCleanerStdlib("include-cleaner-stdlib");
 
 opt<int> LimitResults{
     "limit-results",
@@ -570,7 +563,7 @@ public:
     using namespace llvm::sys;
     // Still require "/" in body to mimic file scheme, as we want lengths of an
     // equivalent URI in both schemes to be the same.
-    if (!Body.startswith("/"))
+    if (!Body.starts_with("/"))
       return error(
           "Expect URI body to be an absolute path starting with '/': {0}",
           Body);
@@ -719,8 +712,11 @@ enum class ErrorResultCode : int {
 };
 
 int clangdMain(int argc, char *argv[]) {
+  // Clang could run on the main thread. e.g., when the flag '-check' or '-sync'
+  // is enabled.
+  clang::noteBottomOfStack();
+  llvm::InitLLVM X(argc, argv);
   llvm::InitializeAllTargetInfos();
-  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
   llvm::sys::AddSignalHandler(
       [](void *) {
         ThreadCrashReporter::runCrashHandlers();
@@ -968,7 +964,6 @@ clangd accepts flags on the commandline, and in the CLANGD_FLAGS environment var
   };
   if (ForceOffsetEncoding != OffsetEncoding::UnsupportedEncoding)
     Opts.Encoding = ForceOffsetEncoding;
-  setIncludeCleanerAnalyzesStdlib(IncludeCleanerStdlib);
 
   if (CheckFile.getNumOccurrences()) {
     llvm::SmallString<256> Path;
