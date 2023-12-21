@@ -11,15 +11,27 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/Transforms/Utils/FPCorr.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/IR/Type.h"
+#include "llvm/Transforms/Utils/FPCorr.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/TargetSelect.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/GenericValue.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/GenericValue.h"
+#include "llvm/ExecutionEngine/Interpreter.h"
+#include "llvm/ExecutionEngine/JITEventListener.h"
+#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
+
+#include <vector>
 #include <mpfr.h>
 #include <mpreal.h>
 #include <cassert>
-
 
 using namespace llvm;
 
@@ -84,20 +96,64 @@ void getAllExpressions(Function &F){
 
 double executeFPFunction(Function &F){
 	Function *VisitedF = &F;
-/*
+
 	Type *RetTy = VisitedF->getReturnType();
-	assert(RetTy->isFloatingPointTy() && "Function does not return Floating Point Type!");
+	assert(RetTy->isFloatingPointTy() && "Function does not return Floating Point Type!");	
+	std::vector<Type *> ArgTypes;
+	std::vector<StringRef> ArgNames;
 	LLVMContext &Ctx = VisitedF->getContext();
 
 	FunctionType *FTy = VisitedF->getFunctionType();
 
-	std::unique_ptr<Module> module = std::make_unique<Module>("CallFunctionModule", Ctx);
-	FunctionCallee callee = module->getOrInsertFunction(VisitedF->getName(), FTy);
+	for (Argument &arg : VisitedF->args()) {
+		ArgTypes.push_back(arg.getType());
+		ArgNames.push_back(arg.getName());
+	}
+
+	FunctionType *funcPointerType = FunctionType::get(VisitedF->getReturnType(), ArgTypes, false);
 	
-	InitializeNativeTarget();
-	InitializeNativeTargetAsmPrinter();
-	ExecutionEngine *EE = EngineBuilder(std::move(module)).create();
-*/	
+	std::unique_ptr<Module> module = std::make_unique<Module>("MyModule", Ctx);
+	module->getOrInsertFunction(VisitedF->getName(), funcPointerType);
+
+
+	// Create an execution engine with a JIT compiler
+	EngineBuilder builder(std::move(module));
+	builder.setEngineKind(EngineKind::Interpreter);
+  ExecutionEngine *EE = builder.create();
+
+	void *RFP = EE->getPointerToFunction(VisitedF);
+	auto *GeneratedFunction = reinterpret_cast<GenericValue (*)(ArrayRef<GenericValue> In)>(RFP);
+
+
+
+	SmallVector<GenericValue, 4> arguments;
+	for (size_t i = 0; i < ArgTypes.size(); ++i) {
+		if (ArgTypes[i]->isIntegerTy()) {
+			GenericValue gv;
+			gv.IntVal = APInt(64, 1); // Replace with appropriate integer value
+			arguments.push_back(gv);
+		} else if (ArgTypes[i]->isDoubleTy()) {
+			GenericValue gv;
+			gv.DoubleVal = 0.0/*double_value*/; // Replace with appropriate double value
+			arguments.push_back(gv);
+		} else if (ArgTypes[i]->isFloatTy()){
+			GenericValue gv;
+			gv.FloatVal = 0/*float*/;
+			arguments.push_back(gv);
+		}	
+	}
+	if (GeneratedFunction) {
+		GenericValue returnValue = GeneratedFunction(arguments);
+		if(RetTy->isFloatTy()){
+			float fval = returnValue.FloatVal;
+		}else if(RetTy->isDoubleTy()){
+			double fval = returnValue.DoubleVal;
+		}else{
+
+		}
+	}else{
+		dbgs() << "Error here .. " << '\n';
+	}
 	return 0;
 }
 
