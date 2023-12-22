@@ -16,16 +16,10 @@
 #include "llvm/IR/Type.h"
 #include "llvm/Transforms/Utils/FPCorr.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/ExecutionEngine/ExecutionEngine.h"
-#include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
-#include "llvm/ExecutionEngine/Interpreter.h"
-#include "llvm/ExecutionEngine/JITEventListener.h"
-#include "llvm/ExecutionEngine/SectionMemoryManager.h"
 
 
 #include <vector>
@@ -94,14 +88,36 @@ void getAllExpressions(Function &F){
 
 }
 
+bool hasGlobalVariables(Function &F){
+	for (inst_iterator It = inst_begin(F), E = inst_end(F); It != E; ++It){
+    Instruction *I = &*It;
+		if (auto *GEP = dyn_cast<GetElementPtrInst>(&I)) {
+			if (auto *GV = dyn_cast<GlobalVariable>(GEP->getPointerOperand())) {
+				return true;			
+			}
+		}
+	}
+	return false;	
+}
+
+bool canExecuteF(Function &F){
+	if(hasGlobalVariables(F)){
+		return false;
+	}
+}
+
 double executeFPFunction(Function &F){
 	Function *VisitedF = &F;
-
 	Type *RetTy = VisitedF->getReturnType();
 	assert(RetTy->isFloatingPointTy() && "Function does not return Floating Point Type!");	
+	if(hasGlobalVariables(F)){
+		return 0;
+	}	
+	SmallVector<GenericValue, 4> arguments;
 	std::vector<Type *> ArgTypes;
 	std::vector<StringRef> ArgNames;
 	LLVMContext &Ctx = VisitedF->getContext();
+	Module *OldModule = VisitedF->getParent();
 
 	FunctionType *FTy = VisitedF->getFunctionType();
 
@@ -110,51 +126,44 @@ double executeFPFunction(Function &F){
 		ArgNames.push_back(arg.getName());
 	}
 
-	FunctionType *funcPointerType = FunctionType::get(VisitedF->getReturnType(), ArgTypes, false);
+	FunctionType *Fty = VisitedF->getfunctionType();	
+	FunctionCallee Callee = OldModule->getOrInsertFunction(VisitedF->getName(), Fty);
 	
-	std::unique_ptr<Module> module = std::make_unique<Module>("MyModule", Ctx);
-	module->getOrInsertFunction(VisitedF->getName(), funcPointerType);
+	
+	std::unique_ptr<Module> NewModule = std::make_unique<Module>("MyNewModule", Ctx);
+	
+	// create the new main function that contains the call	
+	FunctionType *MainFTy = FunctionType::get(Type::getInt32Ty(Context), false);
+	Function *MainFunc = Function::Create(MainFTy, Function::ExternalLinkage, "main", NewModule.get());
+	
+	// Create an entry basic block for the main function
+	BasicBlock *EntryBlock = BasicBlock::Create(Ctx, "entry", MainFunc);
+	IRBuilder<> Builder(EntryBlock);
+	
+	std::unique_ptr<RandomNumberGenerator> RNG = OldModule->createRNG("FPCorrPass");	
 
-
-	// Create an execution engine with a JIT compiler
-	EngineBuilder builder(std::move(module));
-	builder.setEngineKind(EngineKind::Interpreter);
-  ExecutionEngine *EE = builder.create();
-
-	void *RFP = EE->getPointerToFunction(VisitedF);
-	auto *GeneratedFunction = reinterpret_cast<GenericValue (*)(ArrayRef<GenericValue> In)>(RFP);
-
-
-
-	SmallVector<GenericValue, 4> arguments;
-	for (size_t i = 0; i < ArgTypes.size(); ++i) {
-		if (ArgTypes[i]->isIntegerTy()) {
-			GenericValue gv;
-			gv.IntVal = APInt(64, 1); // Replace with appropriate integer value
-			arguments.push_back(gv);
-		} else if (ArgTypes[i]->isDoubleTy()) {
-			GenericValue gv;
-			gv.DoubleVal = 0.0/*double_value*/; // Replace with appropriate double value
-			arguments.push_back(gv);
-		} else if (ArgTypes[i]->isFloatTy()){
-			GenericValue gv;
-			gv.FloatVal = 0/*float*/;
-			arguments.push_back(gv);
-		}	
-	}
-	if (GeneratedFunction) {
-		GenericValue returnValue = GeneratedFunction(arguments);
-		if(RetTy->isFloatTy()){
-			float fval = returnValue.FloatVal;
-		}else if(RetTy->isDoubleTy()){
-			double fval = returnValue.DoubleVal;
-		}else{
-
+	for (int i = 0; i < 1000; ++i){
+		for (size_t i = 0; i < ArgTypes.size(); ++i) {
+			if (ArgTypes[i]->isIntegerTy()) {
+				GenericValue gv;
+				gv.IntVal = APInt(64, 1); 
+				arguments.push_back(gv);
+			} else if (ArgTypes[i]->isDoubleTy()) {
+				GenericValue gv;
+				gv.DoubleVal = 0.0
+				arguments.push_back(gv);
+			} else if (ArgTypes[i]->isFloatTy()){
+				GenericValue gv;
+				gv.FloatVal = 0/*float*/;
+				arguments.push_back(gv);
+			}	
 		}
-	}else{
-		dbgs() << "Error here .. " << '\n';
+		Builder.CreateCall(Callee, arguments)
+		Builder.CreateRet(ConstantInt::get(Type::getInt32Ty(Ctx), 0))	
+		std::error_code EC;
+    raw_fd_ostream out("generated.ll", EC, sys::fs::F_None);
+    NewModule->print(out, nullptr);
 	}
-	return 0;
 }
 
 
