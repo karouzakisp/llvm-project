@@ -14,6 +14,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/FPCorr.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/StringRef.h"
@@ -21,11 +22,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
 
-
 #include <vector>
 #include <mpfr.h>
-#include <mpreal.h>
 #include <cassert>
+#include <random>
+
 
 using namespace llvm;
 
@@ -70,7 +71,7 @@ void visitInstructions(Instruction *I){
   for (Use &Op : I->operands()){
     if(auto *Operand = dyn_cast<Instruction>(Op)){
       if(isMathOrCall(Operand)){
-        dbgs() << "Visited " << Operand->getOpcode() << "\n";
+        errs() << "Visited " << Operand->getOpcode() << "\n";
         visitInstructions(Operand); 
       } 
     }
@@ -91,7 +92,7 @@ void getAllExpressions(Function &F){
 bool hasGlobalVariables(Function &F){
 	for (inst_iterator It = inst_begin(F), E = inst_end(F); It != E; ++It){
     Instruction *I = &*It;
-		if (auto *GEP = dyn_cast<GetElementPtrInst>(&I)) {
+		if (auto *GEP = dyn_cast<GetElementPtrInst>(I)) {
 			if (auto *GV = dyn_cast<GlobalVariable>(GEP->getPointerOperand())) {
 				return true;			
 			}
@@ -101,12 +102,20 @@ bool hasGlobalVariables(Function &F){
 }
 
 bool canExecuteF(Function &F){
+	Type *RetTy = F.getReturnType();
+  if(!RetTy->isFloatingPointTy()){
+    return false;
+  }
 	if(hasGlobalVariables(F)){
 		return false;
 	}
+  return true;
 }
 
 double executeFPFunction(Function &F){
+
+  std::random_device rd;
+  std::default_random_engine generator(rd());
 	Function *VisitedF = &F;
 	Type *RetTy = VisitedF->getReturnType();
 	assert(RetTy->isFloatingPointTy() && "Function does not return Floating Point Type!");	
@@ -126,49 +135,58 @@ double executeFPFunction(Function &F){
 		ArgNames.push_back(arg.getName());
 	}
 
-	FunctionType *Fty = VisitedF->getfunctionType();	
+	FunctionType *Fty = VisitedF->getFunctionType();	
 	FunctionCallee Callee = OldModule->getOrInsertFunction(VisitedF->getName(), Fty);
 	
 	
 	std::unique_ptr<Module> NewModule = std::make_unique<Module>("MyNewModule", Ctx);
-	
-	// create the new main function that contains the call	
-	FunctionType *MainFTy = FunctionType::get(Type::getInt32Ty(Context), false);
-	Function *MainFunc = Function::Create(MainFTy, Function::ExternalLinkage, "main", NewModule.get());
-	
-	// Create an entry basic block for the main function
-	BasicBlock *EntryBlock = BasicBlock::Create(Ctx, "entry", MainFunc);
-	IRBuilder<> Builder(EntryBlock);
-	
-	std::unique_ptr<RandomNumberGenerator> RNG = OldModule->createRNG("FPCorrPass");	
+	std::error_code EC;
+  raw_fd_ostream out("generated.ll", EC);
+  F.print(out);
+  
+  std::uniform_real_distribution<float> f_distribution(-10.0, 10.0);
+  std::uniform_real_distribution<float> r_distribution(1000, 1000);
+  out << "declare float @" << F.getName() << "("; 
+  for (size_t i = 0; i < ArgTypes.size(); ++i) {
+    if(i > 0 ) out << ", ";
 
-	for (int i = 0; i < 1000; ++i){
-		for (size_t i = 0; i < ArgTypes.size(); ++i) {
-			if (ArgTypes[i]->isIntegerTy()) {
-				GenericValue gv;
-				gv.IntVal = APInt(64, 1); 
-				arguments.push_back(gv);
-			} else if (ArgTypes[i]->isDoubleTy()) {
-				GenericValue gv;
-				gv.DoubleVal = 0.0
-				arguments.push_back(gv);
-			} else if (ArgTypes[i]->isFloatTy()){
-				GenericValue gv;
-				gv.FloatVal = 0/*float*/;
-				arguments.push_back(gv);
-			}	
-		}
-		Builder.CreateCall(Callee, arguments)
-		Builder.CreateRet(ConstantInt::get(Type::getInt32Ty(Ctx), 0))	
-		std::error_code EC;
-    raw_fd_ostream out("generated.ll", EC, sys::fs::F_None);
-    NewModule->print(out, nullptr);
-	}
+    if (ArgTypes[i]->isIntegerTy()) {
+      out << "i32";      
+    } else if (ArgTypes[i]->isDoubleTy()) {
+      out << "f64";
+    } else if (ArgTypes[i]->isFloatTy()){
+      out << "f32";
+    }	
+  }
+  out << ")\n";
+  out << "define float @CallerFunction() {\n";
+
+  // TODO change variables to match the F variables types
+  out << " %result = call float @" << F.getName() << "(";
+  for (size_t i = 0; i < ArgTypes.size(); ++i) {
+    if(i > 0 ) out << ", ";
+
+    if (ArgTypes[i]->isIntegerTy()) {
+      out << "i32 " + std::to_string(r_distribution(generator)); 
+    } else if (ArgTypes[i]->isDoubleTy()) {
+      out << "f64 " + std::to_string(f_distribution(generator)); 
+    } else if (ArgTypes[i]->isFloatTy()){
+      out << "f32 " + std::to_string(f_distribution(generator));
+    }
+  }
+  errs() << "writing to out !!! " << "\n";
+  out << ")\n";
+  out << " ret float %result \n";
+  out << "}\n";
+  return 0.0;
 }
 
 
 PreservedAnalyses FPCorrPass::run(Function &F,
                                       FunctionAnalysisManager &AM) {
- 	 
+  dbgs() << "I am here !" << "\n";
+ 	if(canExecuteF(F)){
+    executeFPFunction(F);
+  } 
   return PreservedAnalyses::all();
 }
