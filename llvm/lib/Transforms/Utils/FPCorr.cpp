@@ -20,7 +20,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ExecutionEngine/GenericValue.h"
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+
 
 #include <vector>
 #include <mpfr.h>
@@ -29,6 +33,7 @@
 
 
 using namespace llvm;
+using namespace llvm::orc;
 
 bool isFloatingPointOperation(const Instruction *Instr) {
   Type *Type = Instr->getType();
@@ -181,12 +186,26 @@ double executeFPFunction(Function &F){
   return 0.0;
 }
 
+float tryToJitFunction(Function &F){
+	Function *VisitedF = &F;
+	LLVMContext &Ctx = VisitedF->getContext();
+  auto Context = std::make_unique<LLVMContext>();
+  auto NewM = std::make_unique<Module>("fpcorrM", Ctx);
+  auto Twn = Twine(VisitedF->getName());
+  Function *ClonedF = Function::Create(F.getFunctionType(), F.getLinkage(),
+                                      Twn, std::move(NewM.get()));
+  auto J = LLJITBuilder().create();
+  auto M = ThreadSafeModule(std::move(NewM), std::move(Context));
+  
+  return 0.0;
+}
+
 
 PreservedAnalyses FPCorrPass::run(Function &F,
                                       FunctionAnalysisManager &AM) {
   dbgs() << "I am here !" << "\n";
  	if(canExecuteF(F)){
-    executeFPFunction(F);
+  //    executeFPFunction(F);
   } 
   return PreservedAnalyses::all();
 }
