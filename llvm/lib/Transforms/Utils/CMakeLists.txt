@@ -99,4 +99,16 @@ add_llvm_component_library(LLVMTransformUtils
   Core
   Support
   TargetParser
+  OrcJIT 
+  OrcTargetProcess 
+  native
   )
+
+#add_llvm_pass_plugin(ffff 
+#  FPCorr.cpp
+#  DEPENDS
+#  OrcJIT 
+#  OrcTargetProcess 
+#  Native
+#  BUILDTREE_ONLY
+#)

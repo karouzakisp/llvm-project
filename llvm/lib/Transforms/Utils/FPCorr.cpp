@@ -24,6 +24,12 @@
 #include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
+#include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/Error.h"
 
 
 #include <vector>
@@ -32,8 +38,10 @@
 #include <random>
 
 
+
 using namespace llvm;
 using namespace llvm::orc;
+
 
 bool isFloatingPointOperation(const Instruction *Instr) {
   Type *Type = Instr->getType();
@@ -195,7 +203,7 @@ float tryToJitFunction(Function &F){
   Function *ClonedF = Function::Create(F.getFunctionType(), F.getLinkage(),
                                       Twn, std::move(NewM.get()));
   auto J = LLJITBuilder().create();
-  auto M = ThreadSafeModule(std::move(NewM), std::move(Context));
+//  auto M = ThreadSafeModule(std::move(NewM), std::move(Context));
   
   return 0.0;
 }
