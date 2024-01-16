@@ -30,8 +30,9 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Error.h"
-
-
+#include "llvm/Pass.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/PassPlugin.h"
 #include <vector>
 #include <mpfr.h>
 #include <cassert>
@@ -217,3 +218,31 @@ PreservedAnalyses FPCorrPass::run(Function &F,
   } 
   return PreservedAnalyses::all();
 }
+
+
+llvm::PassPluginLibraryInfo getFpcorrPluginInfo() {
+  return {LLVM_PLUGIN_API_VERSION, "Fpcorr", LLVM_VERSION_STRING,
+          [](PassBuilder &PB) {
+            PB.registerVectorizerStartEPCallback(
+                [](llvm::FunctionPassManager &PM, OptimizationLevel Level) {
+                  PM.addPass(FPCorrPass());
+                });
+            PB.registerPipelineParsingCallback(
+                [](StringRef Name, llvm::FunctionPassManager &PM,
+                   ArrayRef<llvm::PassBuilder::PipelineElement>) {
+                  if (Name == "Fpcorr") {
+                    PM.addPass(FPCorrPass());
+                    return true;
+                  }
+                  return false;
+                });
+          }};
+}
+
+
+#ifndef LLVM_FPCORR_LINK_INTO_TOOLS
+extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo
+llvmGetPassPluginInfo() {
+  return getFpcorrPluginInfo();
+}
+#endif
