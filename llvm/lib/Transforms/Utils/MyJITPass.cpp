@@ -9,43 +9,60 @@
 #include "llvm/Transforms/Utils/MyJITPass.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 
+#include <expected>
+
 using namespace llvm;
 using namespace llvm::orc;
 
-PreservedAnalyses MyJITPass::run(Function &F,
-				 FunctionAnalysisManager &AM) {
-  auto J = LLJITBuilder().create();
-  if (!J) {
-    errs() << "MyJITPass could not create JIT instance for "
-	   << F.getName() << ": " << toString(J.takeError()) << "\n";
-    return PreservedAnalyses::all();
+enum class jit_error
+{
+  jit_instance,
+  add_module,
+  lookup_symbol,
+};
+
+bool canExecuteF(Function &F){
+  Type *RetTy = F.getReturnType();
+  if(!RetTy->isFloatingPointTy()){
+    return false;
   }
+  return true;
+}
 
-  auto I32I32FnTy = FunctionType::get(Type::getInt32Ty(F.getContext()),
-				      {Type::getInt32Ty(F.getContext())}, false);
-  if (F.getFunctionType() != I32I32FnTy) {
-    errs() << "MyJITPass: Function " << F.getName()
-	   << " does not have required type. Skipping.\n";
-    return PreservedAnalyses::all();
-  } 
-  
+auto tryToJitFunction(Function &F) -> std::expected<double, jit_error>
+{
+  auto J = LLJITBuilder().create();
+  if(!J) {
+    errs() << "FPCorrPass could not create JIT instance for "
+      << F.getName() << ": " << toString(J.takeError()) << "\n";
+    return std::unexpected(jit_error::jit_instance);
+  }
   auto FM = cloneToNewContext(*F.getParent(),
-			      [&](const GlobalValue &GV) { return &GV == &F; });
-  if (auto Err = (*J)->addIRModule(std::move(FM))) {
-    errs() << "MyJITPass could not add extracted module for "
-	   << F.getName() << ": " << toString(std::move(Err)) << "\n";
-    return PreservedAnalyses::all();
-  }    
+              [&](const GlobalValue &GV) { return &GV == &F; });
 
+  if cloneToNewContext( auto Err = (*J)->addIRModule(std::move(FM)) ){
+    errs() << "MyJITPass could not add extracted module for "
+      << F.getName() << ": " << toString(std::move(Err)) << "\n";
+    return std::unexpected(jit_error::add_module);
+  }
+  
   auto FSym = (*J)->lookup(F.getName());
   if (!FSym) {
-    errs() << "MyJITPass could not get JIT'd symbol for "
-	   << F.getName() << ": " << toString(FSym.takeError()) << "\n";
-    return PreservedAnalyses::all();
+    errs() << "FPCorrPass could not get JIT'd symbol for "
+      << F.getName() << ": " << toString(FSym.takeError()) << "\n";
+    return std::unexpected(jit_error::lookup);
   }
+  auto *JittedF = FSym->toPtr<float(float)>();
+  auto Res =  JittedF(41.1);
+  errs() << "Result: " << Res << "\n";
+  return Res;
+}
 
-  auto *JittedF = FSym->toPtr<int32_t(int32_t)>();
-  errs() << "Result: " << JittedF(42) << "\n";
-  
-  return PreservedAnalyses::all();
+
+
+PreservedAnalyses MyJITPass::run(Function &F,
+				 FunctionAnalysisManager &AM) {
+  if(canExecuteF(F)){
+    float y = tryToJitFunction(F);
+  }
 }
