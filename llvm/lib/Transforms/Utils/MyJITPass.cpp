@@ -8,8 +8,15 @@
 
 #include "llvm/Transforms/Utils/MyJITPass.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Value.h"
+#include "llvm/IR/Instructions.h"
 
-#include <expected>
+#include <optional>
+#include <vector>
+
 
 using namespace llvm;
 using namespace llvm::orc;
@@ -29,30 +36,82 @@ bool canExecuteF(Function &F){
   return true;
 }
 
-auto tryToJitFunction(Function &F) -> std::expected<double, jit_error>
+std::vector<Value*> createArgValues(Module *M, std::vector<Type *>ArgTypes){
+  FunctionCallee Callee = M->getOrInsertFunction(F.getName());
+  std::vector<Value *> ArgValues;
+  for(Type* Arg : ArgTypes){
+    if(auto *Iarg = dyn_cast<IntegerType> ){
+      switch(Iarg->getBitWidth()){
+        case 8:   ArgValues.push_back(Builder.getInt8(5));
+                  break;
+        case 16:  ArgValues.push_back(Builder.getInt16(20));
+                  break;
+        case 32:  ArgValues.push_back(Builder.getInt32(22));
+                  break;
+        case 64:  ArgValues.push_back(Builder.getInt64(62));
+                  break;
+      }
+    }else if(Arg->isFloatTy() ){
+
+    }else if(Arg->isHalfTy() ){
+
+    }else if(Arg->isBFloatTy() ){
+      
+    }else if(Arg->isDoubleTy() ){
+
+    }else if(Arg->isX86_FP80Ty()){
+
+    }else if(Arg->isFP128Ty()){
+
+    }else if(Arg->isPPC_FP128Ty()){
+
+    }
+  }
+  return ArgValues;
+
+}
+
+
+std::optional<double> tryToJitFunction(Function &F)
 {
   auto J = LLJITBuilder().create();
   if(!J) {
     errs() << "FPCorrPass could not create JIT instance for "
       << F.getName() << ": " << toString(J.takeError()) << "\n";
-    return std::unexpected(jit_error::jit_instance);
+    return std::nullopt;
   }
+  std::vector<Type *> ArgTypes;
+  for (Argument &arg : F.args()) {
+    ArgTypes.push_back(arg.getType());
+  }
+
+  Module *M = FM.getModuleUnlocked();
+  LLVMContext Ctx = M->getContext();
+  FunctionType *FTy=  FunctionType::get(Type::getDoubleTy(Ctx), ArgTypes, 
+                                                                false); 
+  Function *WF = Function::Create(FTy, Function::ExternalLinkage, 
+      "Wrapper"+F.getName(), M->get());
+  BasicBlock *BB = BasicBlock::Create(Ctx, "entry", WF);
+  IRBuilder<> Builder(BB);
+  
   auto FM = cloneToNewContext(*F.getParent(),
               [&](const GlobalValue &GV) { return &GV == &F; });
 
   if cloneToNewContext( auto Err = (*J)->addIRModule(std::move(FM)) ){
     errs() << "MyJITPass could not add extracted module for "
-      << F.getName() << ": " << toString(std::move(Err)) << "\n";
-    return std::unexpected(jit_error::add_module);
+      << WF->getName() << ": " << toString(std::move(Err)) << "\n";
+    return std::nullopt;
   }
-  
-  auto FSym = (*J)->lookup(F.getName());
+
+  auto FSym = (*J)->lookup(WF.getName());
   if (!FSym) {
     errs() << "FPCorrPass could not get JIT'd symbol for "
-      << F.getName() << ": " << toString(FSym.takeError()) << "\n";
-    return std::unexpected(jit_error::lookup);
+      << WF->getName() << ": " << toString(FSym.takeError()) << "\n";
+    return std::nullopt;
   }
-  auto *JittedF = FSym->toPtr<float(float)>();
+  std::vector<Value*> ArgValues = createArgValues(M, ArgTypes); 
+  Value *CallRes = Builder.CreateCall(Callee, ArgValues);
+  ReturnInst *RetInst = Builder.CreateRet(CallRes);
   auto Res =  JittedF(41.1);
   errs() << "Result: " << Res << "\n";
   return Res;
