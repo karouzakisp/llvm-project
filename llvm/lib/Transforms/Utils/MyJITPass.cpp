@@ -36,11 +36,11 @@ bool canExecuteF(Function &F){
   return true;
 }
 
-std::vector<Value*> createArgValues(Module *M, std::vector<Type *>ArgTypes){
-  FunctionCallee Callee = M->getOrInsertFunction(F.getName());
+std::vector<Value*> createArgValues(Module *M, std::vector<Type *>ArgTypes,
+        IRBuilder<> &Builder){
   std::vector<Value *> ArgValues;
   for(Type* Arg : ArgTypes){
-    if(auto *Iarg = dyn_cast<IntegerType> ){
+    if(auto *Iarg = dyn_cast<IntegerType>(Arg) ){
       switch(Iarg->getBitWidth()){
         case 8:   ArgValues.push_back(Builder.getInt8(5));
                   break;
@@ -85,31 +85,33 @@ std::optional<double> tryToJitFunction(Function &F)
     ArgTypes.push_back(arg.getType());
   }
 
-  Module *M = FM.getModuleUnlocked();
-  LLVMContext Ctx = M->getContext();
-  FunctionType *FTy=  FunctionType::get(Type::getDoubleTy(Ctx), ArgTypes, 
-                                                                false); 
-  Function *WF = Function::Create(FTy, Function::ExternalLinkage, 
-      "Wrapper"+F.getName(), M->get());
-  BasicBlock *BB = BasicBlock::Create(Ctx, "entry", WF);
-  IRBuilder<> Builder(BB);
   
   auto FM = cloneToNewContext(*F.getParent(),
               [&](const GlobalValue &GV) { return &GV == &F; });
 
-  if cloneToNewContext( auto Err = (*J)->addIRModule(std::move(FM)) ){
+  Module *M = FM.getModuleUnlocked();
+  LLVMContext &Ctx = M->getContext();
+  FunctionType *FTy=  FunctionType::get(Type::getDoubleTy(Ctx), ArgTypes, 
+                                                                false); 
+  Function *WF = Function::Create(FTy, Function::ExternalLinkage, 
+      "Wrapper"+F.getName(), M);
+  BasicBlock *BB = BasicBlock::Create(Ctx, "entry", WF);
+  IRBuilder<> Builder(BB);
+  
+  if (auto Err = (*J)->addIRModule(std::move(FM))){
     errs() << "MyJITPass could not add extracted module for "
       << WF->getName() << ": " << toString(std::move(Err)) << "\n";
     return std::nullopt;
   }
 
-  auto FSym = (*J)->lookup(WF.getName());
+  auto FSym = (*J)->lookup(WF->getName());
   if (!FSym) {
     errs() << "FPCorrPass could not get JIT'd symbol for "
       << WF->getName() << ": " << toString(FSym.takeError()) << "\n";
     return std::nullopt;
   }
-  std::vector<Value*> ArgValues = createArgValues(M, ArgTypes); 
+  std::vector<Value*> ArgValues = createArgValues(M, ArgTypes, Builder); 
+  FunctionCallee Callee = M->getOrInsertFunction(F.getName(), F.getFunctionType());
   Value *CallRes = Builder.CreateCall(Callee, ArgValues);
   ReturnInst *RetInst = Builder.CreateRet(CallRes);
   auto Res =  JittedF(41.1);
@@ -122,6 +124,6 @@ std::optional<double> tryToJitFunction(Function &F)
 PreservedAnalyses MyJITPass::run(Function &F,
 				 FunctionAnalysisManager &AM) {
   if(canExecuteF(F)){
-    float y = tryToJitFunction(F);
+    std::optional<double> y = tryToJitFunction(F);
   }
 }
