@@ -344,7 +344,7 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
     dbgs() << "Opcode str is " << OpcodesToStr[Opcode] << "\n"; 
     // default solution so we can initialize all the nodes with some solution set.
     auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 
-                0, 
+                getTargetWidth(), 
                 getTargetWidth(), /* TODO CHECK */getTargetWidth() , 
                 0, WIAK_UNKNOWN, Node);
     Solutions.push_back(Sol); 
@@ -402,9 +402,8 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
       It++;
     }
   }
-  dbgs() << "End Add Non Redudant -> " << '\n';
   if(!WasRedudant){
-    dbgs() << "Adding Solution --> " << *GeneratedSol << '\n';
+    dbgs() << "ADNR!!!!!!!!!!!!!!!!!!!!!!!!!Adding Solution --> " << *GeneratedSol << '\n';
     Solutions.push_back(GeneratedSol);
     dbgs() << "Returning True --> " << '\n';
     return true;
@@ -770,7 +769,9 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
         continue;
       dbgs() << "The widths are the same and we continue--> " << w1 << "\n";
       EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
-      if(!TLI.isOperationLegal(Opcode, NewVT))
+      if(!TLI.isOperationLegal(Opcode, NewVT)){
+				dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n";
+			}
         continue;
       dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n";
       // w1 x w2 --> w all widths are the same at this point
@@ -978,8 +979,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
 
   SDValue N0 = Node->getOperand(0);
   unsigned char ExtendedWidth = getScalarSize(Node->getValueType(0));
-  unsigned char Width = getScalarSize(N0.getValueType());  
-  unsigned char FillTypeWidth = getTargetWidth() - Width;  
+  unsigned char OldWidth = getScalarSize(N0.getValueType());  
   unsigned Opc = N0->getOpcode();
   auto ExprSolutions = AvailableSolutions[N0.getNode()];
   SolutionSet Sols;
@@ -997,9 +997,10 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
     dbgs() << "Drop extension in Solutions" << '\n'; 
-    WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Opc,
-      ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
-      Width/*NewWidth*/, Solution->getCost(), Node);
+  	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
+    WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Solution->getOpcode(),
+      ExtensionChoice, FillTypeWidth, OldWidth /*OldWidth*/, 
+      ExtendedWidth/*NewWidth*/, Solution->getCost(), Node);
     
     Expr->setOperands(Solution->getOperands());
     Sols.push_back(Expr); 
