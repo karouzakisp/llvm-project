@@ -422,6 +422,8 @@ protected:
   short int         Cost;
   // Pointer to the SDNode that mapped to this solutionInfo
   SDNode            *Node;
+	// number of operands
+	short int 				NumOperands;
 private:  
   WIAKind Kind;
   // TODO can a SDNode have more than 4 Operands? 
@@ -445,7 +447,12 @@ public:
     Node(other.getNode()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
    
-
+	WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &&other)
+		: Opcode(other.getOpcode()), FillType(other.getFillType()),
+    FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
+    UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
+    Node(other.getNode()) , Kind(other.getKind()),
+    Operands(other.getOperands()) {}
  
 
   unsigned getOpcode(void) const {
@@ -501,17 +508,19 @@ public:
   
   void setOperands(SmallPtrSet<WideningIntegerSolutionInfo *, 4>  Operands_){
     Operands = Operands_;
+		NumOperands = Operands_.size();
   }
   SmallPtrSet<WideningIntegerSolutionInfo *, 4>  getOperands(void) const {
     return std::move(Operands);
   }
   void addOperand(WideningIntegerSolutionInfo *Sol){
     Operands.insert(Sol);
+		NumOperands++;
   }
 
   WideningIntegerSolutionInfo* getOperand(short int i){
-    return NULL;
-  }
+  	return NULL;
+	}
   
   unsigned  getFillTypeWidth(void) const {
     return FillTypeWidth;
@@ -562,7 +571,13 @@ public:
     out << "\tFillTypeWidth: " << Sol.getFillTypeWidth() << '\n';
     out << "\tOldWidth: " << Sol.getWidth() << '\n';
     out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
-    out << "\tCost : "<< Sol.getCost() << '\n';
+    out << "\tCost : "<< Sol.getCost() << '\n'; 
+		int i = 0;
+		for(auto Op : Sol.getOperands() ){
+			out << " Children " << i++ <<  "--> " << '\n';
+			out << *Op << "   ";	
+		}
+		 
     return out;
   } 
 

@@ -67,7 +67,6 @@ class WideningIntegerArithmetic {
     // checks whether a SDNode in the DAG is visited and solved` 
     isSolvedMap solvedNodes; 
     bool IsSolved(SDNode *Node);
-    SolutionSet PossibleSolutions;
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -112,10 +111,10 @@ class WideningIntegerArithmetic {
     SolutionSet visitLOAD(SDNode *Node);
     SolutionSet visitSTORE(SDNode *Node);
     SolutionSet visitUNOP(SDNode *Node);
-    void visitFILL(SDNode *Node);
-    void visitWIDEN(SDNode *Node);
-    void visitWIDEN_GARBAGE(SDNode *Node);
-    void visitNARROW(SDNode *Node);
+		std::list<WideningIntegerSolutionInfo*> visitFILL(SDNode *Node);
+		std::list<WideningIntegerSolutionInfo*> visitWIDEN(SDNode *Node);
+		std::list<WideningIntegerSolutionInfo*> visitWIDEN_GARBAGE(SDNode *Node);
+		std::list<WideningIntegerSolutionInfo*> visitNARROW(SDNode *Node);
     SolutionSet visitDROP_EXT(SDNode *Node);
     SolutionSet visitDROP_TRUNC(SDNode *Node);
     SolutionSet visitEXTLO( SDNode *Node);
@@ -160,6 +159,7 @@ void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, SDNode *Node){
   dbgs() << "Found many Solutions ..-->\n";
   for(WideningIntegerSolutionInfo *Solution : Sols){
     dbgs() << "----- Solution " << ++i << "\n" << (*Solution) << "\n";
+		dbgs() << "=======================================================" << "\n";
   }
 }
 
@@ -547,12 +547,15 @@ WideningIntegerArithmetic::closure(SDNode *Node){
   int i = 0;
   do{
     Changed = false;
-    visitFILL(Node);
-    visitWIDEN(Node);
-    visitWIDEN_GARBAGE(Node); 
-    visitNARROW(Node);
-    dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << PossibleSolutions.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n';
-    for(auto PossibleSol : PossibleSolutions){
+    auto FillsList = visitFILL(Node);
+    auto WidensList = visitWIDEN(Node);
+    auto GarbageWidenList = visitWIDEN_GARBAGE(Node); 
+    auto NarrowList = visitNARROW(Node);
+		FillsList.splice(FillsList.end(), WidensList);
+		FillsList.splice(FillsList.end(), GarbageWidenList);
+		FillsList.splice(FillsList.end(), NarrowList);
+    dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << FillsList.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n';
+    for(auto PossibleSol : FillsList){
       dbgs() << "Before Adding Possible Sol --> " << '\n';
       printNodeSols(AvailableSolutions[Node], Node); 
       dbgs() << "Trying to add pos sol if non redudant --> " << *PossibleSol << '\n';
@@ -563,10 +566,7 @@ WideningIntegerArithmetic::closure(SDNode *Node){
         printNodeSols(AvailableSolutions[Node], Node);
       } 
     }
-    dbgs() << "Clear all the possible solutions " << '\n';
-    PossibleSolutions.clear();  // TODO how to optimize this ?
-                                // Implement closure in each visit?
-    dbgs() << "Possible Solution size is --> " << PossibleSolutions.size() << '\n';; 
+    dbgs() << "Possible Solution size is --> " << FillsList.size() << '\n';; 
   }while(Changed == true );
   dbgs() << "Returning all the Solutions after non redudant" << '\n';
   return Sols;
@@ -670,7 +670,9 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
   // use only a smaller width and ignore the upper bits
 
   // TODO do we need to return multiple loads? 
-  EVT MemoryVT = LD->getMemoryVT();
+	// Probably yes TODO check!
+  EVT MemoryVT  = LD->getMemoryVT();
+
   IntegerFillType FillType; 
   // distiguish EXTLOAD and NON ext LOAD Non EXT needs to be extended if the upper bits are used
   switch(LD->getExtensionType()){
@@ -689,13 +691,27 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
     default:
       return Sols;
   }
-  unsigned char Width = getScalarSize(MemoryVT); 
-  unsigned char FillTypeWidth = getScalarSize(LD->getValueType(0)); // 
-  dbgs() << "--------------------------------------------------------- getTargetWidth is " << getTargetWidth() << '\n'; 
+  int Width = getScalarSize(MemoryVT); 
+  int FillTypeWidth = Width; 
   auto WIALoad = new WIA_LOAD(Node->getOpcode(), FillType, FillTypeWidth,
-                Width, getTargetWidth(), 0, Node);  
-  Sols.push_back(WIALoad);
-  return Sols;
+                Width, FillTypeWidth, 0, Node);
+  unsigned ExtensionOpc = getExtensionChoice(FillType);
+ 	SolutionSet WidenSols;	
+	for(int IntegerSize : IntegerSizes){
+		EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+		if(IntegerSize <= FillTypeWidth) // TODO check
+			continue;
+		if(!TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT))
+			continue;
+		// Results to a widened expr based on ExtensionOpc
+		WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
+			ExtensionOpc, FillType, FillTypeWidth, Width,
+			IntegerSize, 1, Node);
+		Widen->addOperand(WIALoad); 
+		WidenSols.push_back(Widen); 
+	}	
+ 	WidenSols.push_back(WIALoad);	
+ 	return WidenSols; 
 }
   
 
@@ -763,16 +779,18 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
       if(FillType == UNDEFINED)
         continue;
       dbgs() << "Passed FillType for combination --> " << FillType << "\n";
-      unsigned char w1 = leftSolution->getUpdatedWidth();
-      unsigned char w2 = rightSolution->getUpdatedWidth();
-      if(w1 != w2)
-        continue;
+      unsigned int w1 = leftSolution->getUpdatedWidth();
+      unsigned int w2 = rightSolution->getUpdatedWidth();
+      if(w1 != w2){
+       	dbgs() << "Width " << w1 << "and Width " << w2 << " are not the same skipping solution.." << "\n";
+			 	continue;
+			}
       dbgs() << "The widths are the same and we continue--> " << w1 << "\n";
       EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
       if(!TLI.isOperationLegal(Opcode, NewVT)){
 				dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n";
-			}
         continue;
+			}
       dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n";
       // w1 x w2 --> w all widths are the same at this point
       // and there is a LegalOperation for that Opcode
@@ -785,7 +803,6 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
                     // for example on rv64 we have addw
                     // that is of the form i32 x i32 -> i32 
                     // and stored in a sign extended format to i64
-      // TODO check overflow and then calculate the FillTypeWidth.
 
       auto Sol = new WIA_BINOP(Node->getOpcode(), FillType, 
           FillTypeWidth, w1, UpdatedWidth, Cost, Node);
@@ -801,7 +818,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
   return tryClosure(Node, AddedSol); 
 }
 
-void WideningIntegerArithmetic::visitFILL(
+std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitFILL(
                           SDNode *Node){
   
   EVT VT = Node->getValueType(0);
@@ -811,6 +828,7 @@ void WideningIntegerArithmetic::visitFILL(
   unsigned char FillTypeWidth = VTBits; 
   
   SolutionSet Sols = AvailableSolutions[Node];
+	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
     if(Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ||
        llvm::ISD::isExtOpcode(Sol->getOpcode()))
@@ -829,11 +847,10 @@ void WideningIntegerArithmetic::visitFILL(
         ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
         getTargetWidth() , Sol->getCost() + 1, Node ); 
       Fill->addOperand(Sol);
-      PossibleSolutions.push_back(Fill);  
+      Solutions.push_front(Fill);  
     }
-
   }
-    
+	return Solutions;	  
 }
 
 inline Type* WideningIntegerArithmetic::getTypeFromInteger(
@@ -859,7 +876,7 @@ inline unsigned WideningIntegerArithmetic::getExtCost(SDNode *Node,
   return cost;
 }
   
-void WideningIntegerArithmetic::visitWIDEN(
+std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
                           SDNode *Node){
  
   // TODO how to check for Type S? depends on target ? or on this operand
@@ -871,6 +888,7 @@ void WideningIntegerArithmetic::visitWIDEN(
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
   SolutionSet Sols = AvailableSolutions[Node];
   dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
     dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n';
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
@@ -891,14 +909,14 @@ void WideningIntegerArithmetic::visitWIDEN(
         ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
         getTargetWidth() , cost , Node);
       Widen->addOperand(Sol); 
-      PossibleSolutions.push_back(Widen);
+      Solutions.push_front(Widen);  
     } 
   }
-
+	return Solutions;	
 }
     
 
-void WideningIntegerArithmetic::visitWIDEN_GARBAGE(
+std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GARBAGE(
       SDNode *Node){
 
   // #TODO get width of expr must be in the same node or on the operand
@@ -907,6 +925,7 @@ void WideningIntegerArithmetic::visitWIDEN_GARBAGE(
   unsigned ExtensionOpc = ISD::ANY_EXTEND;  // Results to a garbage widened
   auto Sols = AvailableSolutions[Node];
   dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+	std::list<WideningIntegerSolutionInfo*> Solutions;
   // TODO add isExtFree and modify cost accordingly 
   for(WideningIntegerSolutionInfo *Sol : Sols){
     dbgs() << "Inside GarbageWiden Iterating Sol --> " << Sol << '\n';
@@ -927,12 +946,13 @@ void WideningIntegerArithmetic::visitWIDEN_GARBAGE(
         ExtensionOpc, ANYTHING, FillTypeWidth,  Width, getTargetWidth(),
         cost , Node);
       GarbageWiden->addOperand(Sol);
-      PossibleSolutions.push_back(GarbageWiden);    
+      Solutions.push_front(GarbageWiden);    
     }
-  }  
+  }
+	return Solutions;	
 }
     
-void WideningIntegerArithmetic::visitNARROW(SDNode *Node){
+std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(SDNode *Node){
   
  
   unsigned char Width = getScalarSize(Node->getValueType(0));  
@@ -944,6 +964,7 @@ void WideningIntegerArithmetic::visitNARROW(SDNode *Node){
  
   auto Sols = AvailableSolutions[Node];
   dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(auto Sol : Sols){ 
     dbgs() << "Inside visitNarrow " << '\n';
     for(unsigned char k = 0; k < IntegerSizes.size() - 1; k++){
@@ -969,9 +990,10 @@ void WideningIntegerArithmetic::visitNARROW(SDNode *Node){
         ExtensionChoice, // Will depend on available Narrowing , 
         FillTypeWidth, Width, IntegerSizes[k], Sol->getCost() + 1 , Node);
       Trunc->addOperand(Sol);
-      PossibleSolutions.push_back(Trunc);
+      Solutions.push_front(Trunc);
     }
   } 
+	return Solutions;	
 }
     
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
