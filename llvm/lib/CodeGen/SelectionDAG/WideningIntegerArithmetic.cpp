@@ -402,11 +402,11 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
       It++;
     }
   }
-  dbgs() << "End Add Non Redudant -> " << '\n';
+  dbgs() << "Add Non Redudant -> " << '\n';
   if(!WasRedudant){
-    dbgs() << "Adding Solution --> " << *GeneratedSol << '\n';
+    dbgs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Adding Solution --> " << *GeneratedSol << '\n';
     Solutions.push_back(GeneratedSol);
-    dbgs() << "Returning True --> " << '\n';
+    dbgs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!Returning True --> " << '\n';
     return true;
   }
   dbgs() << "Returning False --> " << '\n';
