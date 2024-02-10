@@ -572,11 +572,11 @@ public:
     out << "\tOldWidth: " << Sol.getWidth() << '\n';
     out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
     out << "\tCost : "<< Sol.getCost() << '\n'; 
-		int i = 0;
-		for(auto Op : Sol.getOperands() ){
-			out << " Children " << i++ <<  "--> " << '\n';
-			out << *Op << "   ";	
-		}
+		//int i = 0;
+		//for(auto Op : Sol.getOperands() ){
+		//	out << " Children " << i++ <<  "--> " << '\n';
+		//	out << *Op << "   ";	
+		//}
 		 
     return out;
   } 
