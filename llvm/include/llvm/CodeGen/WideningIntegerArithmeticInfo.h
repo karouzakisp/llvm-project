@@ -413,11 +413,11 @@ protected:
   // Fill type for the upper bits of the expression
   // can be zero, one or garbage
   IntegerFillType   FillType; // τ
-  unsigned char     FillTypeWidth; // n τ[n]
+  unsigned short     FillTypeWidth; // n τ[n]
   // The current width of the instruction's destination operand
-  unsigned char     Width;        // w
+  unsigned short     Width;        // w
   // The updated width of the instruction's destination operand
-  unsigned char     UpdatedWidth;
+  unsigned short     UpdatedWidth;
   // The cost of the solution
   short int         Cost;
   // Pointer to the SDNode that mapped to this solutionInfo
@@ -433,7 +433,7 @@ public:
   WideningIntegerSolutionInfo() {}
   WideningIntegerSolutionInfo(WIAKind Kind_): Kind(Kind_) {} 
   WideningIntegerSolutionInfo(unsigned char Opcode_, IntegerFillType FillType_,
-  unsigned FillTypeWidth_, unsigned char Width_, unsigned char UpdatedWidth_, 
+  unsigned short FillTypeWidth_, unsigned short Width_, unsigned short UpdatedWidth_, 
     short int Cost_, WIAKind Kind_, SDNode* Node_): 
   Opcode(Opcode_),  FillType(FillType_), 
   FillTypeWidth(FillTypeWidth_), Width(Width_),
@@ -484,18 +484,18 @@ public:
     FillType = FillType_; 
   }
 
-  unsigned getWidth(void) const {
+  unsigned short getWidth(void) const {
     return Width;
   }
-  void setWidth(unsigned char Width_){
+  void setWidth(unsigned short Width_){
     Width = Width_;
   }
   
-  unsigned getUpdatedWidth(void) const {
+  unsigned short getUpdatedWidth(void) const {
     return UpdatedWidth;
   }
 
-  void setUpdatedWidth(unsigned char UpdatedWidth_){
+  void setUpdatedWidth(unsigned short UpdatedWidth_){
     UpdatedWidth = UpdatedWidth_;
   }
  
@@ -522,11 +522,11 @@ public:
   	return NULL;
 	}
   
-  unsigned  getFillTypeWidth(void) const {
+  unsigned short getFillTypeWidth(void) const {
     return FillTypeWidth;
   }
 
-  void setFillTypeWidth(unsigned FillType_){
+  void setFillTypeWidth(unsigned short FillType_){
     FillTypeWidth = FillType_;
   }
 
@@ -572,11 +572,12 @@ public:
     out << "\tOldWidth: " << Sol.getWidth() << '\n';
     out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
     out << "\tCost : "<< Sol.getCost() << '\n'; 
-		//int i = 0;
-		//for(auto Op : Sol.getOperands() ){
-		//	out << " Children " << i++ <<  "--> " << '\n';
-		//	out << *Op << "   ";	
-		//}
+		int i = 0;
+		for(auto Op : Sol.getOperands() ){
+			out << " Children " << i <<  "--> " << '\n';
+			out << *Op << "   ";
+      i++;  
+		}
 		 
     return out;
   } 
@@ -587,8 +588,8 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
   ~WIA_BINOP() {}
   WIA_BINOP() {}
   WIA_BINOP(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -611,8 +612,8 @@ class WIA_FILL : public WideningIntegerSolutionInfo
   ~WIA_FILL() {};
   WIA_FILL() {;};
   WIA_FILL(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -634,8 +635,8 @@ class WIA_WIDEN : public WideningIntegerSolutionInfo
   WIA_WIDEN() {}
   ~WIA_WIDEN() {}
   WIA_WIDEN(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -656,8 +657,8 @@ class WIA_WIDEN_GARBAGE : public WideningIntegerSolutionInfo
   WIA_WIDEN_GARBAGE() {}
   ~WIA_WIDEN_GARBAGE() {}
   WIA_WIDEN_GARBAGE(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -679,8 +680,8 @@ class WIA_NARROW : public WideningIntegerSolutionInfo
   WIA_NARROW() {}
   ~WIA_NARROW() {}
   WIA_NARROW(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_ , FillTypeWidth_ , Width_, 
@@ -703,8 +704,8 @@ class WIA_DROP_EXT : public WideningIntegerSolutionInfo
   WIA_DROP_EXT() {}
   ~WIA_DROP_EXT() {}
   WIA_DROP_EXT(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -727,8 +728,8 @@ class WIA_DROP_LOCOPY : public WideningIntegerSolutionInfo
   WIA_DROP_LOCOPY() {}
   ~WIA_DROP_LOCOPY() {}
   WIA_DROP_LOCOPY(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_, 
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_,
@@ -751,8 +752,8 @@ class WIA_DROP_LOIGNORE : public WideningIntegerSolutionInfo
   WIA_DROP_LOIGNORE() {}
   ~WIA_DROP_LOIGNORE() {}
   WIA_DROP_LOIGNORE(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -775,8 +776,8 @@ class WIA_EXTLO : public WideningIntegerSolutionInfo
   WIA_EXTLO() {}
   ~WIA_EXTLO() {}
   WIA_EXTLO(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -799,8 +800,8 @@ class WIA_SUBSUME_FILL : public WideningIntegerSolutionInfo
   WIA_SUBSUME_FILL() {}
   ~WIA_SUBSUME_FILL() {}
   WIA_SUBSUME_FILL(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -823,8 +824,8 @@ class WIA_SUBSUME_INDEX : public WideningIntegerSolutionInfo
   WIA_SUBSUME_INDEX() {}
   ~WIA_SUBSUME_INDEX() {}
   WIA_SUBSUME_INDEX(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -847,8 +848,8 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   WIA_NATURAL() {}
   ~WIA_NATURAL() {}
   WIA_NATURAL(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -872,8 +873,8 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
   WIA_LOAD() {}
   ~WIA_LOAD() {}
   WIA_LOAD(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -895,8 +896,8 @@ class WIA_STORE : public WideningIntegerSolutionInfo
   WIA_STORE() {}
   ~WIA_STORE() {}
   WIA_STORE(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -918,8 +919,8 @@ class WIA_UNOP : public WideningIntegerSolutionInfo
   WIA_UNOP() {}
   ~WIA_UNOP() {}
   WIA_UNOP(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
@@ -941,8 +942,8 @@ class WIA_CONSTANT : public WideningIntegerSolutionInfo
   WIA_CONSTANT() {}
   ~WIA_CONSTANT() {}
   WIA_CONSTANT(unsigned char Opcode_, IntegerFillType FillType_,
-            unsigned char FillTypeWidth_,
-            unsigned char Width_, unsigned char UpdatedWidth_, 
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
             short int Cost_, SDNode *Node_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
