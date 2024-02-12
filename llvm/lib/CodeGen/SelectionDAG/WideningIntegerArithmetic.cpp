@@ -359,7 +359,8 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
 
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(SDNode *Node){
-  
+ 	SolutionSet EmptySols;
+
   if(IsSolved(Node) ){
     dbgs() << "Node " << Node->getNodeId() << "is Solved";
     dbgs() << " and Opcode str is " << OpcodesToStr[Node->getOpcode()] << "\n"; 
@@ -369,8 +370,13 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
     SDNode *OperandNode = value.getNode(); // #TODO 1 check value size is 1?
     SolutionSet Sols = visit_widening(OperandNode);
   }
-  dbgs() << " Trying to solve Node with Opc !! : " << OpcodesToStr[Node->getOpcode()] << " " << Node->getOpcode() << "\n";
+	if(!Node){
+		dbgs() << "empty Sols check........!!!!!!!!!!!!!!!!" << '\n';
+		return EmptySols;
+	}
+  dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n";
   auto CalcSolutions = visitInstruction(Node);
+  dbgs() << " Solved Instruction !! : " << Node->getOpcode() << "\n";
   solvedNodes[Node] = true; 
   if(CalcSolutions.size() > 0){
     printNodeSols(CalcSolutions, Node);
@@ -378,7 +384,7 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   }else{
     dbgs() << "This node does not have any solutions" << "\n";
   }
-    return CalcSolutions;
+  return CalcSolutions;
   
 }
 
