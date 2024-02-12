@@ -124,7 +124,7 @@ class WideningIntegerArithmetic {
     SolutionSet visitCONSTANT(SDNode *Node);
 
 
-    std::vector<int> IntegerSizes = {8, 16, 32, 64};
+    std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
     unsigned int getTargetWidth();
 
@@ -145,7 +145,7 @@ class WideningIntegerArithmetic {
     inline unsigned char getScalarSize(const EVT &VT) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
     inline unsigned int getExtCost(SDNode *Node, 
-                WideningIntegerSolutionInfo* Sol, unsigned char IntegerSize);
+                WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize);
     void initOperatorsFillTypes();
     void printNodeSols(SolutionSet Sols, SDNode *Node);
     inline Type* getTypeFromInteger(unsigned char Integer);
@@ -698,7 +698,7 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
                 Width, FillTypeWidth, 0, Node);
   unsigned ExtensionOpc = getExtensionChoice(FillType);
  	SolutionSet WidenSols;	
-	for(int IntegerSize : IntegerSizes){
+	/*for(int IntegerSize : IntegerSizes){
 		EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
 		if(IntegerSize <= FillTypeWidth) // TODO check
 			continue;
@@ -710,7 +710,7 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
 			IntegerSize, 1, Node);
 		Widen->addOperand(WIALoad); 
 		WidenSols.push_back(Widen); 
-	}	
+	}	*/
  	WidenSols.push_back(WIALoad);	
  	return WidenSols; 
 }
@@ -832,13 +832,15 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitFILL(
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
     if(Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ||
-       llvm::ISD::isExtOpcode(Sol->getOpcode()))
+       llvm::ISD::isExtOpcode(Sol->getOpcode()) ||
+         Sol->getOpcode() == ISD::TRUNCATE ) 
       continue;    // TODO CHECK is FILL a ISD::SIGN_EXTEND_INREG ??
     // WIA_FILL extends the least significant *Width* bits of SDNode
     // to targetWidth
     for(auto IntegerSize : IntegerSizes ){
       EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
-      if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() || 
+      if(IntegerSize < FillTypeWidth || IntegerSize < (int)Sol->getWidth() ||
+         Sol->getOpcode() == ISD::TRUNCATE || 
          !TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)){
         continue;
 			}
@@ -868,10 +870,10 @@ inline Type* WideningIntegerArithmetic::getTypeFromInteger(
 }
 
 inline unsigned WideningIntegerArithmetic::getExtCost(SDNode *Node,
-         WideningIntegerSolutionInfo* Sol, unsigned char IntegerSize){
+         WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize){
   unsigned cost = Sol->getCost();
   Type* Ty1 = Node->getValueType(0).getTypeForEVT(*DAG.getContext());
-  Type* Ty2 = getTypeFromInteger(IntegerSize);
+  Type* Ty2 = getTypeFromInteger((int)IntegerSize);
   if(!TLI.isZExtFree(Ty1, Ty2) || !TLI.isSExtFree(Ty1, Ty2)){
     ++cost;
   }
@@ -894,7 +896,8 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
   for(WideningIntegerSolutionInfo *Sol : Sols){
     dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n';
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
-       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG)
+       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG || 
+       Sol->getOpcode() == ISD::TRUNCATE ) 
       continue;
     dbgs() << "Passed first if --> " << Sol << '\n';
     for(int IntegerSize : IntegerSizes){
@@ -929,12 +932,13 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GA
   for(WideningIntegerSolutionInfo *Sol : Sols){
     dbgs() << "Inside GarbageWiden Iterating Sol --> " << Sol << '\n';
     if(llvm::ISD::isExtOpcode(Sol->getOpcode() || 
-       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG))
+       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ) ||
+       Sol->getOpcode() == ISD::TRUNCATE ) 
       continue;
     dbgs() << "Passed first if --> " << Sol << '\n';
     for(int IntegerSize : IntegerSizes){
       EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
-      if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() 
+      if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||  
          !TLI.isOperationLegal(ISD::ANY_EXTEND, NewVT)){
         continue;
 			}
@@ -967,18 +971,15 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(auto Sol : Sols){ 
     dbgs() << "Inside visitNarrow " << '\n';
+    if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
+        Sol->getOpcode() == ISD::SIGN_EXTEND_INREG  ||
+        Sol->getOpcode() == ISD::TRUNCATE ) 
+      continue;
     for(int IntegerSize : IntegerSizes){
-      if(llvm::ISD::isExtOpcode(Sol->getOpcode())) // do we need to keep solutions of the form truncate( anyext (x ) ) ??
-        continue;
       EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize);
       if(!TLI.isOperationLegal(ISD::TRUNCATE, NewVT) ||
-         llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
-				 IntegerSize < FillTypeWidth || IntegerSize >= Sol->getWidth() {
+				 IntegerSize < FillTypeWidth || IntegerSize >= Sol->getWidth()) {
 				continue;
-			}
-      if(
-         !TLI.isOperationLegal(ISD::ANY_EXTEND, NewVT)){
-        continue;
 			}
     
       dbgs() << "Getting type for EVT for Left child " << '\n';
@@ -992,10 +993,10 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
       }
       if(!TLI.isTruncateFree(Ty1, Ty2))
         cost = cost + 1;
-      dbgs() << "Adding new Wia Narrow" << IntegerSizes[k] <<  '\n';
+      dbgs() << "Adding new Wia Narrow" << IntegerSize <<  '\n';
       WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
         ExtensionChoice, // Will depend on available Narrowing , 
-        FillTypeWidth, Width, IntegerSizes[k], Sol->getCost() + 1 , Node);
+        FillTypeWidth, Width, IntegerSize, Sol->getCost() + 1 , Node);
       Trunc->addOperand(Sol);
       Solutions.push_front(Trunc);
     }
@@ -1028,8 +1029,8 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     dbgs() << "Drop extension in Solutions" << '\n'; 
   	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Solution->getOpcode(),
-      ExtensionChoice, FillTypeWidth, OldWidth /*OldWidth*/, 
-      ExtendedWidth/*NewWidth*/, Solution->getCost(), Node);
+      ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
+      OldWidth/*NewWidth*/, Solution->getCost(), Node);
     
     Expr->setOperands(Solution->getOperands());
     Sols.push_back(Expr); 
