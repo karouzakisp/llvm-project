@@ -356,6 +356,7 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
 }
 
 
+long long int counter = 0;
 
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(SDNode *Node){
@@ -378,9 +379,16 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   auto CalcSolutions = visitInstruction(Node);
   dbgs() << " Solved Instruction !! : " << Node->getOpcode() << "\n";
   solvedNodes[Node] = true; 
+  dbgs() << "Solved Instruction number !!: " << counter << "\n";
+  dbgs() << "AllNodes size is --> " << DAG.allnodes_size() << "\n";
+	counter++;
   if(CalcSolutions.size() > 0){
     printNodeSols(CalcSolutions, Node);
-    AvailableSolutions[Node] = CalcSolutions;
+		if(auto search = AvailableSolutions.find(Node); search != AvailableSolutions.end()){
+			dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
+		}else{
+    	AvailableSolutions[Node] = CalcSolutions;
+		}
   }else{
     dbgs() << "This node does not have any solutions" << "\n";
   }
@@ -1030,6 +1038,9 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n';
   dbgs() << "Opc of Node->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n';
   dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n';
+  dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n';
+  dbgs() << "NewWidth of Node is " << OldWidth << '\n';
+  dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n';
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
     dbgs() << "Drop extension in Solutions" << '\n'; 
@@ -1063,12 +1074,13 @@ WideningIntegerArithmetic::SolutionSet
     dbgs() << " has no Solutions\n";
     return Sols; 
   }
-  unsigned char TruncatedWidth = getScalarSize(Node->getValueType(0)); // TODO CHECK
-  // We simply drop the truncation and we will later see if it's needed.
   unsigned Opc = N0->getOpcode();
+	// NewWidth is the width of the value before the truncation
+  unsigned char NewWidth = getScalarSize(N0.getValueType()); 
+  unsigned char TruncatedWidth = getScalarSize(Node->getValueType(0)); 
+  // We simply drop the truncation and we will later see if it's needed.
   NumTruncatesDropped++; 
   for(auto Sol : ExprSolutions){
-    unsigned char NewWidth = getTargetWidth() - Sol->getFillTypeWidth();   
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOCOPY(Opc,
       Sol->getFillType(), Sol->getFillTypeWidth(), TruncatedWidth, 
       NewWidth, Sol->getCost(), Node);
@@ -1080,7 +1092,6 @@ WideningIntegerArithmetic::SolutionSet
  
   // We simply drop the truncation and we will later see if it's needed.
   for(auto Sol : ExprSolutions){ 
-    unsigned char NewWidth = getTargetWidth() - Sol->getFillTypeWidth();   
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOIGNORE(Opc,
       Sol->getFillType(), Sol->getFillTypeWidth(), TruncatedWidth, 
       NewWidth, Sol->getCost(), Node);
