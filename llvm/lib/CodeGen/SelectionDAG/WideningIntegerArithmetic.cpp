@@ -378,14 +378,14 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
   LLVM_DEBUG(dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n");
   auto CalcSolutions = visitInstruction(Node);
   LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << Node->getOpcode() << "\n");
-  dbgs() << "Solved Instruction number !!: " << counter << "\n";
+  //dbgs() << "Solved Instruction number !!: " << counter << "\n";
   solvedNodes[Node] = true; 
   LLVM_DEBUG(dbgs() << "AllNodes size is --> " << DAG.allnodes_size() << "\n");
 	counter++;
   if(CalcSolutions.size() > 0){
     //printNodeSols(CalcSolutions, Node);
 		if(auto search = AvailableSolutions.find(Node); search != AvailableSolutions.end()){
-      dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
+      //dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
 		}else{
     	AvailableSolutions[Node] = CalcSolutions;
 		}
@@ -791,7 +791,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
                                   rightSolution->getFillType());
       if(FillType == UNDEFINED)
         continue;
-      dbgs() << "Passed FillType for combination --> " << FillType << "\n";
+      //dbgs() << "Passed FillType for combination --> " << FillType << "\n";
       unsigned int w1 = leftSolution->getUpdatedWidth();
       unsigned int w2 = rightSolution->getUpdatedWidth();
       if(w1 != w2){
@@ -805,7 +805,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
         LoadSDNode *LD  = cast<LoadSDNode>(Node11);
         dbgs() << "EVT get String " << LD->getMemoryVT().getEVTString() << '\n'; 
       }
-      dbgs() << "The widths are the same and we continue--> " << w1 << "\n"; 
+      //dbgs() << "The widths are the same and we continue--> " << w1 << "\n"; 
       EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
       if(!TLI.isOperationLegal(Opcode, NewVT)){
 				LLVM_DEBUG(dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n");
@@ -833,7 +833,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
       AddedSol = true; 
     }
   }
-  dbgs() << "Calling closure here.\n"; 
+  //dbgs() << "Calling closure here.\n"; 
   // call closure if multiple FillTypes or Multiple Binop Widths
   return tryClosure(Node, AddedSol); 
 }
