@@ -142,7 +142,7 @@ class WideningIntegerArithmetic {
  
     // Helper functions 
     SolutionType NodeToSolutionType(SDNode *Node, int cost);
-    inline unsigned char getScalarSize(const EVT &VT) const;
+    inline unsigned int getScalarSize(const EVT &VT) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
     inline unsigned int getExtCost(SDNode *Node, 
                 WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize);
@@ -156,14 +156,14 @@ class WideningIntegerArithmetic {
 
 void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, SDNode *Node){
   int i = 0;
-	dbgs() << "AvailableSolutions Size. --> " << Sols.size() << "\n";
+	LLVM_DEBUG(dbgs() << "AvailableSolutions Size. --> " << Sols.size() << "\n");
 	for(WideningIntegerSolutionInfo *Solution : Sols){
-    dbgs() << "----- Solution " << ++i << "\n" << (*Solution) << "\n";
+    LLVM_DEBUG(dbgs() << "----- Solution " << ++i << "\n" << (*Solution) << "\n");
   }
-	dbgs() << "=======================================================" << "\n";
+	LLVM_DEBUG(dbgs() << "=======================================================" << "\n");
 }
 
-inline unsigned char WideningIntegerArithmetic::getScalarSize(const EVT &VT) const {
+inline unsigned int WideningIntegerArithmetic::getScalarSize(const EVT &VT) const {
   return VT.getScalarSizeInBits(); // TODO check
 }
 
@@ -303,45 +303,45 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
   SolutionSet Solutions ;
   unsigned Opcode = Node->getOpcode();
   
-  dbgs() << " and Opcode is " << Opcode;
+  LLVM_DEBUG(dbgs() << " and Opcode is " << Opcode);
   if(IsBinop(Opcode)){
-    dbgs() << " Binop Opcode str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Binop..\n";  
+    LLVM_DEBUG(dbgs() << " Binop Opcode str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Binop..\n"); 
     return visitBINOP(Node);
   }
   else if(IsUnop(Opcode)){
-    dbgs() << " Unop Opcode str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Unop...\n"; 
+    LLVM_DEBUG(dbgs() << " Unop Opcode str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Unop...\n"); 
     return visitUNOP(Node);
   }
   else if(IsLoad(Opcode)){
-    dbgs() << " Load Opcode str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Load...\n"; 
+    LLVM_DEBUG(dbgs() << " Load Opcode str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Load...\n"); 
     return visitLOAD(Node);
   }
   else if(IsStore(Opcode)){
-    dbgs() << " Store Opcode str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visting Store...\n"; 
+    LLVM_DEBUG(dbgs() << " Store Opcode str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visting Store...\n"); 
     return visitSTORE(Node);
   }
   else if(IsExtension(Opcode)){
-    dbgs() << " Is Extension str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Extension...\n"; 
+    LLVM_DEBUG(dbgs() << " Is Extension str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Extension...\n"); 
     return visitDROP_EXT(Node);
   }
   else if(IsTruncate(Opcode)){ 
-    dbgs() << " Is Truncate str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Truncation ..\n"; 
+    LLVM_DEBUG(dbgs() << " Is Truncate str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Truncation ..\n"); 
     return visitDROP_TRUNC(Node);
   }
   else if(Opcode == ISD::Constant){
-    dbgs() << " Is Constant str is " << OpcodesToStr[Opcode];
-    dbgs() << " and Visiting Constant..\n"; 
+    LLVM_DEBUG(dbgs() << " Is Constant str is " << OpcodesToStr[Opcode]);
+    LLVM_DEBUG(dbgs() << " and Visiting Constant..\n"); 
     return visitCONSTANT(Node);
   }
   else{
-    dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
-    dbgs() << "Opcode str is " << OpcodesToStr[Opcode] << "\n"; 
+    LLVM_DEBUG(dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n");
+    LLVM_DEBUG(dbgs() << "Opcode str is " << OpcodesToStr[Opcode] << "\n");
     // default solution so we can initialize all the nodes with some solution set.
     auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 
                 getTargetWidth(), 
@@ -351,7 +351,7 @@ SmallVector<WideningIntegerSolutionInfo *> WideningIntegerArithmetic::visitInstr
   }
     
   // TODO we are missing many opcodes here, need to add them. 
-  dbgs() << "Returning default solution take care here.\n"; 
+  LLVM_DEBUG(dbgs() << "Returning default solution take care here.\n"); 
   return Solutions;
 }
 
@@ -363,8 +363,8 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
  	SolutionSet EmptySols;
 
   if(IsSolved(Node) ){
-    dbgs() << "Node " << Node->getNodeId() << "is Solved";
-    dbgs() << " and Opcode str is " << OpcodesToStr[Node->getOpcode()] << "\n"; 
+    LLVM_DEBUG(dbgs() << "Node " << Node->getNodeId() << "is Solved");
+    LLVM_DEBUG(dbgs() << " and Opcode str is " << OpcodesToStr[Node->getOpcode()] << "\n"); 
     return AvailableSolutions[Node]; 
   } 
   for (const SDValue &value : Node->op_values() ){    
@@ -375,22 +375,22 @@ WideningIntegerArithmetic::visit_widening(SDNode *Node){
 		dbgs() << "empty Sols check........!!!!!!!!!!!!!!!!" << '\n';
 		return EmptySols;
 	}
-  dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n";
+  LLVM_DEBUG(dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n");
   auto CalcSolutions = visitInstruction(Node);
-  dbgs() << " Solved Instruction !! : " << Node->getOpcode() << "\n";
-  solvedNodes[Node] = true; 
+  LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << Node->getOpcode() << "\n");
   dbgs() << "Solved Instruction number !!: " << counter << "\n";
-  dbgs() << "AllNodes size is --> " << DAG.allnodes_size() << "\n";
+  solvedNodes[Node] = true; 
+  LLVM_DEBUG(dbgs() << "AllNodes size is --> " << DAG.allnodes_size() << "\n");
 	counter++;
   if(CalcSolutions.size() > 0){
-    printNodeSols(CalcSolutions, Node);
+    //printNodeSols(CalcSolutions, Node);
 		if(auto search = AvailableSolutions.find(Node); search != AvailableSolutions.end()){
-			dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
+      dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
 		}else{
     	AvailableSolutions[Node] = CalcSolutions;
 		}
   }else{
-    dbgs() << "This node does not have any solutions" << "\n";
+    LLVM_DEBUG(dbgs() << "This node does not have any solutions" << "\n");
   }
   return CalcSolutions;
   
@@ -401,16 +401,16 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
                     WideningIntegerSolutionInfo* GeneratedSol){
   bool WasRedudant = false;
   int RedudantNodeToDeleteCost = INT_MAX;
-  dbgs() << "Begin Add Non Redudant -> " << '\n';
+  LLVM_DEBUG(dbgs() << "Begin Add Non Redudant -> " << '\n');
   for(auto It = Solutions.begin(); It != Solutions.end(); ){
     int ret = (*It)->IsRedudant((*GeneratedSol));
     if(ret == -1 ){ // GeneratedSol is redudant
       WasRedudant = true; 
       It++; 
-		 	dbgs() << "GeneratedSol is redudant!" << '\n';	
+		 	LLVM_DEBUG(dbgs() << "GeneratedSol is redudant!" << '\n');	
     }else if(ret == 1){ // Sol is redudant
       assert(GeneratedSol->getCost() < RedudantNodeToDeleteCost);
-      dbgs() << "Current Sol is Redudant .... Deleting it --> " << (**It) << '\n';
+      LLVM_DEBUG(dbgs() << "Current Sol is Redudant .... Deleting it --> " << (**It) << '\n');
       It = Solutions.erase(It);
       // TODO consider change data structure for Possible small optimization
     }else{ // ret == 0 no redudant found
@@ -418,12 +418,12 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
     }
   }
   if(!WasRedudant){
-    dbgs() << "!!!!!!!!!!!!!!Adding Solution --> " << OpcodesToStr[GeneratedSol->getOpcode()] << "\n"; 
+    LLVM_DEBUG(dbgs() << "!!!!!!!!!!!!!!Adding Solution --> " << OpcodesToStr[GeneratedSol->getOpcode()] << "\n"); 
 		//<< *GeneratedSol << '\n';
     Solutions.push_back(GeneratedSol);
     return true;
   }
-  dbgs() << "Finished and Returning False --> " << '\n';
+  LLVM_DEBUG(dbgs() << "Finished and Returning False --> " << '\n');
   return false;
 }
 
@@ -569,21 +569,21 @@ WideningIntegerArithmetic::closure(SDNode *Node){
 		FillsList.splice(FillsList.end(), WidensList);
 		FillsList.splice(FillsList.end(), GarbageWidenList);
 		FillsList.splice(FillsList.end(), NarrowList);
-    dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << FillsList.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n';
+    LLVM_DEBUG(dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << FillsList.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n');
     for(auto PossibleSol : FillsList){
-      dbgs() << "Trying to Add Possible Sol --> " << *PossibleSol << '\n';
+      LLVM_DEBUG(dbgs() << "Trying to Add Possible Sol --> " << *PossibleSol << '\n');
 
       bool Added = addNonRedudant(AvailableSolutions[Node], PossibleSol);
-      printNodeSols(AvailableSolutions[Node], Node); 
+      //printNodeSols(AvailableSolutions[Node], Node); 
       if(Added){
         Changed = true;
-        dbgs() << "Added Possible Solution " << '\n';
+        LLVM_DEBUG(dbgs() << "Added Possible Solution " << '\n');
         printNodeSols(AvailableSolutions[Node], Node);
       } 
     }
-    dbgs() << "Possible Solution size is --> " << FillsList.size() << '\n';; 
+    LLVM_DEBUG(dbgs() << "Possible Solution size is --> " << FillsList.size() << '\n'); 
   }while(Changed == true );
-  dbgs() << "Returning all the Solutions after non redudant" << '\n';
+  LLVM_DEBUG(dbgs() << "Returning all the Solutions after non redudant" << '\n');
   return Sols;
 }
 
@@ -706,7 +706,8 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
     default:
       return Sols;
   }
-  int Width = getScalarSize(MemoryVT); 
+  
+  unsigned int Width = getScalarSize(Node->getValueType(0));
   int FillTypeWidth = Width; 
   auto WIALoad = new WIA_LOAD(Node->getOpcode(), FillType, FillTypeWidth,
                 Width, FillTypeWidth, 0, Node);
@@ -774,10 +775,10 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
      getTargetWidth() , /* Cost */ 0, Node); 
   AvailableSolutions[Node].push_back(defaultSol);
 
-  dbgs() << "Operand 0 is --> " << OpcodesToStr[N0->getOpcode()]<< "\n";
-  dbgs() << "Operand 1 is --> " << OpcodesToStr[N1->getOpcode()]<< "\n";
-  dbgs() << "Operand 0 Solutions Size is --> " << LeftSols.size() << "\n";
-  dbgs() << "Operand 1 Solutions Size is --> " << RightSols.size() << "\n";
+  LLVM_DEBUG(dbgs() << "Operand 0 is --> " << OpcodesToStr[N0->getOpcode()]<< "\n");
+  LLVM_DEBUG(dbgs() << "Operand 1 is --> " << OpcodesToStr[N1->getOpcode()]<< "\n");
+  LLVM_DEBUG(dbgs() << "Operand 0 Solutions Size is --> " << LeftSols.size() << "\n");
+  LLVM_DEBUG(dbgs() << "Operand 1 Solutions Size is --> " << RightSols.size() << "\n");
   FillTypeSet OperandFillTypes = getOperandFillTypes(Node);
   LLVMContext &Ctx = *DAG.getContext();
   // A function that combines solutions from operands left and right
@@ -788,25 +789,29 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
       auto FillType = getOrNullFillType((OperandFillTypes),
                                   leftSolution->getFillType(),
                                   rightSolution->getFillType());
-      dbgs() << "Left FillType is --> " << leftSolution->getFillType() << "\n";
-      dbgs() << "Right FillType is --> " << rightSolution->getFillType() << "\n";
-      dbgs() << "Found FillType for combination --> " << FillType << "\n";
       if(FillType == UNDEFINED)
         continue;
       dbgs() << "Passed FillType for combination --> " << FillType << "\n";
       unsigned int w1 = leftSolution->getUpdatedWidth();
       unsigned int w2 = rightSolution->getUpdatedWidth();
       if(w1 != w2){
-       	dbgs() << "Width " << w1 << "and Width " << w2 << " are not the same skipping solution.." << "\n";
+       	LLVM_DEBUG(dbgs() << "Width " << w1 << "and Width " << w2 << " are not the same skipping solution.." << "\n");
 			 	continue;
 			}
-      dbgs() << "The widths are the same and we continue--> " << w1 << "\n";
+      if(w1 == 0 || w2 == 0){
+        dbgs() << "Left Solution --> " << *leftSolution << '\n';
+        dbgs() << "Right Solution --> " << *rightSolution << '\n';
+        auto Node11 = leftSolution->getNode();
+        LoadSDNode *LD  = cast<LoadSDNode>(Node11);
+        dbgs() << "EVT get String " << LD->getMemoryVT().getEVTString() << '\n'; 
+      }
+      dbgs() << "The widths are the same and we continue--> " << w1 << "\n"; 
       EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
       if(!TLI.isOperationLegal(Opcode, NewVT)){
-				dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n";
+				LLVM_DEBUG(dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n");
         continue;
 			}
-      dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n";
+      LLVM_DEBUG(dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n");
       // w1 x w2 --> w all widths are the same at this point
       // and there is a LegalOperation for that Opcode
       unsigned char UpdatedWidth = w1;
@@ -823,7 +828,7 @@ WideningIntegerArithmetic::visitBINOP(SDNode* Node){
           FillTypeWidth, w1, UpdatedWidth, Cost, Node);
       Sol->addOperand(leftSolution);
       Sol->addOperand(rightSolution);
-      dbgs() << "Adding Sol with cost " << Cost << " and width " << UpdatedWidth << "\n";
+      LLVM_DEBUG(dbgs() << "Adding Sol with cost " << Cost << " and width " << UpdatedWidth << "\n");
       AvailableSolutions[Node].push_back(Sol);
       AddedSol = true; 
     }
@@ -905,22 +910,22 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
   unsigned char Width = getTargetWidth() - FillTypeWidth; 
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
   SolutionSet Sols = AvailableSolutions[Node];
-  dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+  LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
-    dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n';
+    LLVM_DEBUG(dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n');
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
        Sol->getOpcode() == ISD::SIGN_EXTEND_INREG || 
        Sol->getOpcode() == ISD::TRUNCATE ) 
       continue;
-    dbgs() << "Passed first if --> " << Sol << '\n';
+    LLVM_DEBUG(dbgs() << "Passed first if --> " << Sol << '\n');
     for(int IntegerSize : IntegerSizes){
       EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
       if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||
          !TLI.isOperationLegal(ExtensionOpc, NewVT)){
         continue;
 			}
-      dbgs() << "Adding all Solution with IntegerSize --> " << IntegerSize << '\n';
+      LLVM_DEBUG(dbgs() << "Adding all Solution with IntegerSize --> " << IntegerSize << '\n');
       unsigned cost = getExtCost(Node, Sol, IntegerSize); 
       // Results to a widened expr based on ExtensionOpc
       WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
@@ -940,16 +945,16 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GA
   unsigned char FillTypeWidth = getScalarSize(Node->getOperand(0).getValueType());  
   unsigned ExtensionOpc = ISD::ANY_EXTEND;  // Results to a garbage widened
   auto Sols = AvailableSolutions[Node];
-  dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+  LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   // TODO add isExtFree and modify cost accordingly 
   for(WideningIntegerSolutionInfo *Sol : Sols){
-    dbgs() << "Inside GarbageWiden Iterating Sol --> " << Sol << '\n';
+    LLVM_DEBUG(dbgs() << "Inside GarbageWiden Iterating Sol --> " << Sol << '\n');
     if(llvm::ISD::isExtOpcode(Sol->getOpcode() || 
        Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ) ||
        Sol->getOpcode() == ISD::TRUNCATE ) 
       continue;
-    dbgs() << "Passed first if --> " << Sol << '\n';
+    LLVM_DEBUG(dbgs() << "Passed first if --> " << Sol << '\n');
     for(int IntegerSize : IntegerSizes){
       EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
       if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||  
@@ -958,7 +963,7 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GA
 			}
       
       unsigned cost = getExtCost(Node, Sol, IntegerSize); 
-      dbgs() << "Adding GarbageWiden --> " << IntegerSize << '\n';
+      LLVM_DEBUG(dbgs() << "Adding GarbageWiden --> " << IntegerSize << '\n');
      
       WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
         ExtensionOpc, ANYTHING, FillTypeWidth,  Sol->getWidth(), IntegerSize,
@@ -981,10 +986,10 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
  
   auto Sols = AvailableSolutions[Node];
-  dbgs() << "SolutionsSize is --> " << Sols.size() << '\n';
+  LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(auto Sol : Sols){ 
-    dbgs() << "Inside visitNarrow " << '\n';
+    LLVM_DEBUG(dbgs() << "Inside visitNarrow " << '\n');
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
         Sol->getOpcode() == ISD::SIGN_EXTEND_INREG  ||
         Sol->getOpcode() == ISD::TRUNCATE ) 
@@ -996,7 +1001,7 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
 				continue;
 			}
     
-      dbgs() << "Getting type for EVT for Left child " << '\n';
+      LLVM_DEBUG(dbgs() << "Getting type for EVT for Left child " << '\n');
       unsigned cost = Sol->getCost();
       Type* Ty1 = Node->getValueType(0).getTypeForEVT(*DAG.getContext());
       Type* Ty2;
@@ -1007,7 +1012,7 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
       }
       if(!TLI.isTruncateFree(Ty1, Ty2))
         cost = cost + 1;
-      dbgs() << "Adding new Wia Narrow" << IntegerSize <<  '\n';
+      LLVM_DEBUG(dbgs() << "Adding new Wia Narrow" << IntegerSize <<  '\n');
       WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
         ExtensionChoice, // Will depend on available Narrowing , 
         FillTypeWidth, Width, IntegerSize, Sol->getCost() + 1 , Node);
@@ -1034,16 +1039,16 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     case ISD::AssertSext: ++NumSExtsDropped; break;      
     case ISD::AssertZext: ++NumZExtsDropped; break;
   }
-  dbgs() << "Trying to drop extension in Solutions" << '\n';
-  dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n';
-  dbgs() << "Opc of Node->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n';
-  dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n';
-  dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n';
-  dbgs() << "NewWidth of Node is " << OldWidth << '\n';
-  dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n';
+  LLVM_DEBUG(dbgs() << "Trying to drop extension in Solutions" << '\n');
+  LLVM_DEBUG(dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n');
+  LLVM_DEBUG(dbgs() << "Opc of Node->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n');
+  LLVM_DEBUG(dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n');
+  LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
+  LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
+  LLVM_DEBUG(dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n');
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
-    dbgs() << "Drop extension in Solutions" << '\n'; 
+    LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n'); 
   	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Solution->getOpcode(),
       ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
@@ -1065,13 +1070,12 @@ WideningIntegerArithmetic::SolutionSet
                               "Not an extension to drop here");  
   // TRUNCATE has only 1 operand
   SDValue N0 = Node->getOperand(0);
-  dbgs() << "Getting Child's Solutions\n";
   SmallVector<WideningIntegerSolutionInfo*> ExprSolutions = 
                                               AvailableSolutions[N0.getNode()];
   
   if(ExprSolutions.size() == 0 ){
-    dbgs() << "Child of Truncate with opc " << N0.getNode()->getOpcode();
-    dbgs() << " has no Solutions\n";
+    LLVM_DEBUG(dbgs() << "Child of Truncate with opc " << N0.getNode()->getOpcode());
+    LLVM_DEBUG(dbgs() << " has no Solutions\n");
     return Sols; 
   }
   unsigned Opc = N0->getOpcode();
