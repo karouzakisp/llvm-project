@@ -581,8 +581,8 @@ protected:
   unsigned short     UpdatedWidth;
   // The cost of the solution
   short int         Cost;
-  // Pointer to the SDNode that mapped to this solutionInfo
-  SDNode            *Node;
+  // Pointer to the Instruction that mapped to this solutionInfo
+  Instruction       *Instr;
 	// number of operands
 	short int 				NumOperands;
 private:  
@@ -595,24 +595,24 @@ public:
   WideningIntegerSolutionInfo(WIAKind Kind_): Kind(Kind_) {} 
   WideningIntegerSolutionInfo(unsigned char Opcode_, IntegerFillType FillType_,
   unsigned short FillTypeWidth_, unsigned short Width_, unsigned short UpdatedWidth_, 
-    short int Cost_, WIAKind Kind_, SDNode* Node_): 
+    short int Cost_, WIAKind Kind_, Instruction *Instr_): 
   Opcode(Opcode_),  FillType(FillType_), 
   FillTypeWidth(FillTypeWidth_), Width(Width_),
   UpdatedWidth(UpdatedWidth_),
-  Cost(Cost_), Node(Node_), Kind(Kind_) {}
+  Cost(Cost_), Instr(Instr_), Kind(Kind_) {}
  
   WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &other)
   : Opcode(other.getOpcode()), FillType(other.getFillType()),
     FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
     UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
-    Node(other.getNode()) , Kind(other.getKind()),
+    Instr(other.getInstruction()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
    
 	WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &&other)
 		: Opcode(other.getOpcode()), FillType(other.getFillType()),
     FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
     UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
-    Node(other.getNode()) , Kind(other.getKind()),
+    Instr(other.getInstruction()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
  
 
@@ -691,8 +691,8 @@ public:
     FillTypeWidth = FillType_;
   }
 
-  void setNode(SDNode *Node_){
-    Node = Node_;
+  void setInstruction(Instruction *Instr_){
+    Instr = Instr_;
   }
   
   SDNode* getNode(void) const {

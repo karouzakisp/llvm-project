@@ -14,12 +14,24 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Support/TypeSize.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Pass.h"
+#include "llvm/InitializePasses.h"
+
 
 #define DEBUG_TYPE "WideningIntegerArithmetic"
 STATISTIC(NumSExtsDropped, "Number of ISD::SIGN_EXTEND nodes that were dropped"); 
@@ -31,24 +43,21 @@ using namespace llvm;
 namespace {
 
 
-class WideningIntegerArithmetic {
-  SelectionDAG &DAG;
-  const TargetLowering &TLI; 
+class WideningIntegerArithmetic : public FunctionPass {
+  const TargetLowering *TLI = nullptr; 
 
   public:
-    WideningIntegerArithmetic(SelectionDAG &D):
-      DAG(D), TLI(D.getTargetLoweringInfo())  {
-    }
+    WideningIntegerArithmetic(): FunctionPass(ID) {}
     WideningIntegerArithmetic(const WideningIntegerArithmetic &)= delete;
     WideningIntegerArithmetic& operator=(const WideningIntegerArithmetic&) = delete; 
     
     void solve(CodeGenOpt::Level OL);
   
     ///                         NodeId 
-    using isSolvedMap = DenseMap<SDNode*, bool>;
+    using isSolvedMap = DenseMap<Instruction*, bool>;
     using SolutionSet = SmallVector<WideningIntegerSolutionInfo *>;
     using SolutionSetParam = SmallVectorImpl<WideningIntegerSolutionInfo * >;    
-    using AvailableSolutionsMap = DenseMap<SDNode* , SolutionSet>;
+    using AvailableSolutionsMap = DenseMap<Instruction* , SolutionSet>;
     
     using BinOpWidth = std::tuple<unsigned char, unsigned char, unsigned char>;
     using WidthsSet = SmallVector<BinOpWidth>;
@@ -64,7 +73,7 @@ class WideningIntegerArithmetic {
     enum IntegerFillType ExtensionChoice;   
     
  
-    // checks whether a SDNode in the DAG is visited and solved` 
+    // checks whether an Instruction in the Function F is visited and solved` 
     isSolvedMap solvedNodes; 
     bool IsSolved(SDNode *Node);
     // Holds all the available solutions 
@@ -85,15 +94,15 @@ class WideningIntegerArithmetic {
             FillTypeSet availableFillTypes, IntegerFillType Left, 
             IntegerFillType Right);
 
-    SmallVector<WideningIntegerSolutionInfo *> visit_widening(SDNode *Node);
+    SmallVector<WideningIntegerSolutionInfo *> visit_widening(Instruction *Instr);
 
 
-    FillTypeSet getOperandFillTypes(SDNode *Node);
+    FillTypeSet getOperandFillTypes(Instruction *Instr);
   
     void setFillType(EVT SrcVt, EVT DstVT);  
-    bool isInteger(SDNode *Node);
-    bool isSolved(SDNode *Node);
-    void combineBinOp(SDNode *N, SolutionSet leftSols, 
+    bool isInteger(Instruction *Instr);
+    bool isSolved(Instruction *Instr);
+    void combineBinOp(Instruction *N, SolutionSet leftSols, 
                           SolutionSet rightSols);
 
     bool addNonRedudant(SolutionSet &Solutions, 
@@ -102,26 +111,26 @@ class WideningIntegerArithmetic {
     inline bool hasTypeT(IntegerFillType fill);
     inline bool hasTypeS(IntegerFillType fill);
 
-    SolutionSet closure(SDNode *Node);
-    SolutionSet tryClosure(SDNode *Node, bool changed);
+    SolutionSet closure(Instruction *Instr);
+    SolutionSet tryClosure(Instruction *Instr, bool changed);
 
-    SolutionSet visitXOR(SDNode *Node);
-    SolutionSet visitInstruction(SDNode *Node);
-    SolutionSet visitBINOP(SDNode *Node);
-    SolutionSet visitLOAD(SDNode *Node);
-    SolutionSet visitSTORE(SDNode *Node);
-    SolutionSet visitUNOP(SDNode *Node);
-		std::list<WideningIntegerSolutionInfo*> visitFILL(SDNode *Node);
-		std::list<WideningIntegerSolutionInfo*> visitWIDEN(SDNode *Node);
-		std::list<WideningIntegerSolutionInfo*> visitWIDEN_GARBAGE(SDNode *Node);
-		std::list<WideningIntegerSolutionInfo*> visitNARROW(SDNode *Node);
-    SolutionSet visitDROP_EXT(SDNode *Node);
-    SolutionSet visitDROP_TRUNC(SDNode *Node);
-    SolutionSet visitEXTLO( SDNode *Node);
-    SolutionSet visitSUBSUME_FILL(SDNode *Node);
-    SolutionSet visitSUBSUME_INDEX(SDNode *Node);
-    SolutionSet visitNATURAL(SDNode *Node);
-    SolutionSet visitCONSTANT(SDNode *Node);
+    SolutionSet visitXOR(Instruction *Instr);
+    SolutionSet visitInstruction(Instruction *Instr);
+    SolutionSet visitBINOP(Instruction *Instr);
+    SolutionSet visitLOAD(Instruction *Instr);
+    SolutionSet visitSTORE(Instruction *Instr);
+    SolutionSet visitUNOP(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitFILL(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitWIDEN(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitWIDEN_GARBAGE(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitNARROW(Instruction *Instr);
+    SolutionSet visitDROP_EXT(Instruction *Instr);
+    SolutionSet visitDROP_TRUNC(Instruction *Instr);
+    SolutionSet visitEXTLO(Instruction *Instr);
+    SolutionSet visitSUBSUME_FILL(Instruction *Instr);
+    SolutionSet visitSUBSUME_INDEX(Instruction *Instr);
+    SolutionSet visitNATURAL(Instruction *Instr);
+    SolutionSet visitCONSTANT(Instruction *Instr);
 
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
@@ -141,23 +150,28 @@ class WideningIntegerArithmetic {
     bool IsStore(unsigned Opcode);
  
     // Helper functions 
-    SolutionType NodeToSolutionType(SDNode *Node, int cost);
     inline IntegerFillType getIntFillTypeFromLoad(ISD::LoadExtType ExtType); 
-    inline IntegerFillType getLoadFillType(SDNode *Node);
-    inline unsigned int getScalarSize(const EVT &VT) const;
+    inline IntegerFillType getLoadFillType(Instruction *Instr);
+    inline unsigned int getScalarSize(const Type *Typ) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
-    inline unsigned int getExtCost(SDNode *Node, 
+    inline unsigned int getExtCost(Instruction *Instr, 
                 WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize);
     void initOperatorsFillTypes();
-    void printNodeSols(SolutionSet Sols, SDNode *Node);
+    void printNodeSols(SolutionSet Sols, Instruction *Instr);
     inline Type* getTypeFromInteger(unsigned char Integer);
 
-    bool mayOverflow(SDNode *Node);
+    bool mayOverflow(Instruction *Instr);
 };
 
 } // end anonymous namespace
 
-void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, SDNode *Node){
+class WideningIntegerArithmetic::ID = 0; 
+static RegisterPass<WideningIntegerArithmetic> X("WideningIntegerArithmetic",
+                            "WideningIntegerArithmeticPass", false, false);
+
+
+  
+  void WideningIntegerArithmetic::printNodeSols(SolutionSet Sols, Instruction *Instr){
   int i = 0;
 	LLVM_DEBUG(dbgs() << "AvailableSolutions Size. --> " << Sols.size() << "\n");
 	for(WideningIntegerSolutionInfo *Solution : Sols){
