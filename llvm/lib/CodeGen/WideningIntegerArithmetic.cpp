@@ -22,7 +22,7 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/User.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
@@ -54,10 +54,10 @@ class WideningIntegerArithmetic : public FunctionPass {
     
     void solve(CodeGenOpt::Level OL);
   
-    using isSolvedMap = DenseMap<User*, bool>;
+    using isSolvedMap = DenseMap<Instruction*, bool>;
     using SolutionSet = SmallVector<WideningIntegerSolutionInfo *>;
     using SolutionSetParam = SmallVectorImpl<WideningIntegerSolutionInfo * >;    
-    using AvailableSolutionsMap = DenseMap<User* , SolutionSet>;
+    using AvailableSolutionsMap = DenseMap<Instruction* , SolutionSet>;
     
     using BinOpWidth = std::tuple<unsigned char, unsigned char, unsigned char>;
     using WidthsSet = SmallVector<BinOpWidth>;
@@ -75,7 +75,7 @@ class WideningIntegerArithmetic : public FunctionPass {
  
     // checks whether an Instruction in the Function F is visited and solved` 
     isSolvedMap solvedNodes; 
-    bool IsSolved(User *U);
+    bool IsSolved(Instruction *Instr);
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -94,14 +94,14 @@ class WideningIntegerArithmetic : public FunctionPass {
             FillTypeSet availableFillTypes, IntegerFillType Left, 
             IntegerFillType Right);
 
-    SmallVector<WideningIntegerSolutionInfo *> visit_widening(User *U);
+    SmallVector<WideningIntegerSolutionInfo *> visit_widening(Instruction *Instr);
 
 
-    FillTypeSet getOperandFillTypes(Usere *U);
+    FillTypeSet getOperandFillTypes(Instruction *Instr);
   
     void setFillType(Type* SrcTy, Type* DstTy);  
-    bool isInteger(User *U);
-    bool isSolved(User *U);
+    bool isInteger(Instruction *U);
+    bool isSolved(Instruction *U);
 
     bool addNonRedudant(SolutionSet &Solutions, 
                         WideningIntegerSolutionInfo* GeneratedSol);
@@ -109,26 +109,27 @@ class WideningIntegerArithmetic : public FunctionPass {
     inline bool hasTypeT(IntegerFillType fill);
     inline bool hasTypeS(IntegerFillType fill);
 
-    SolutionSet closure(User *U);
-    SolutionSet tryClosure(User *U, bool changed);
+    SolutionSet closure(Instruction *Instr);
+    SolutionSet tryClosure(Instruction *Instr, bool changed);
 
-    SolutionSet visitXOR(User *U);
-    SolutionSet visitInstruction(User *U);
-    SolutionSet visitBINOP(User *U);
-    SolutionSet visitLOAD(User *U);
-    SolutionSet visitSTORE(User *U);
-    SolutionSet visitUNOP(User *U);
-		std::list<WideningIntegerSolutionInfo*> visitFILL(User *U);
-		std::list<WideningIntegerSolutionInfo*> visitWIDEN(User *U);
-		std::list<WideningIntegerSolutionInfo*> visitWIDEN_GARBAGE(User *U);
-		std::list<WideningIntegerSolutionInfo*> visitNARROW(User *U);
-    SolutionSet visitDROP_EXT(User *U);
-    SolutionSet visitDROP_TRUNC(User *U);
-    SolutionSet visitEXTLO(User *U);
-    SolutionSet visitSUBSUME_FILL(User *U);
-    SolutionSet visitSUBSUME_INDEX(User *U);
-    SolutionSet visitNATURAL(User *U);
-    SolutionSet visitCONSTANT(User *U);
+    SolutionSet visitXOR(Instruction *Instr);
+    SolutionSet visitInstruction(Instruction *Instr);
+    SolutionSet visitBINOP(Instruction *Instr);
+    SolutionSet visitLOAD(Instruction *Instr);
+    SolutionSet visitSTORE(Instruction *Instr);
+    SolutionSet visitUNOP(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitFILL(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitWIDEN(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> 
+			visitWIDEN_GARBAGE(Instruction *Instr);
+		std::list<WideningIntegerSolutionInfo*> visitNARROW(Instruction *Instr);
+    SolutionSet visitDROP_EXT(Instruction *Instr);
+    SolutionSet visitDROP_TRUNC(Instruction *Instr);
+    SolutionSet visitEXTLO(Instruction *Instr);
+    SolutionSet visitSUBSUME_FILL(Instruction *Instr);
+    SolutionSet visitSUBSUME_INDEX(Instruction *Instr);
+    SolutionSet visitNATURAL(Instruction *Instr);
+    SolutionSet visitCONSTANT(ConstantInt *CI);
 
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
@@ -148,17 +149,17 @@ class WideningIntegerArithmetic : public FunctionPass {
  
     // Helper functions 
     inline IntegerFillType getIntFillTypeFromLoad(ISD::LoadExtType ExtType); 
-    inline IntegerFillType getLoadFillType(User *U);
+    inline IntegerFillType getLoadFillType(Instruction *Instr);
     inline unsigned int getScalarSize(const TargetLowering &TLI, 
 				const Type *Typ, const DataLayout &DL) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
-    inline unsigned int getExtCost(User *U, 
+    inline unsigned int getExtCost(Instruction *Instr, 
                 WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize);
     void initOperatorsFillTypes();
-    void printInstrSols(SolutionSet Sols, User *U);
+    void printInstrSols(SolutionSet Sols, Instruction *Instr);
     inline Type* getTypeFromInteger(unsigned char Integer);
 
-    bool mayOverflow(User *U);
+    bool mayOverflow(Instruction *Instr);
 };
 
 } // end anonymous namespace
@@ -170,7 +171,7 @@ static RegisterPass<WideningIntegerArithmetic> X("WideningIntegerArithmetic",
 
   
 void WideningIntegerArithmetic::printInstrSols(SolutionSet Sols, 
-		User *U){
+		Instruction *Instr){
   int i = 0;
 	LLVM_DEBUG(dbgs() << "AvailableSolutions Size. --> " << Sols.size() << "\n");
 	for(WideningIntegerSolutionInfo *Solution : Sols){
@@ -193,40 +194,21 @@ inline unsigned WideningIntegerArithmetic::getExtensionChoice(
 
 bool WideningIntegerArithmetic::IsBinop(unsigned Opcode){
   switch(Opcode){
-    case ISD::ADD:                
-    case ISD::SUB:                
-    case ISD::SADDSAT:
-    case ISD::UADDSAT:            
-    case ISD::SSUBSAT:
-    case ISD::USUBSAT:            
-    case ISD::ADDC:               
-    case ISD::SADDO:
-    case ISD::UADDO:             
-    case ISD::SUBC:             
-    case ISD::SSUBO:
-    case ISD::USUBO:              
-    case ISD::ADDE:               
-    case ISD::ADDCARRY:           
-    case ISD::SADDO_CARRY:        
-    case ISD::SUBE:              
-    case ISD::SUBCARRY:          
-    case ISD::SSUBO_CARRY:       
-    case ISD::SMULFIX:
-    case ISD::SMULFIXSAT:
-    case ISD::UMULFIX:
-    case ISD::UMULFIXSAT:         
-    case ISD::MUL:                
-    case ISD::SDIV:               
-    case ISD::UDIV:               
-    case ISD::SREM:
-    case ISD::UREM:               
-    case ISD::MULHU:              
-    case ISD::MULHS:             
-    case ISD::AND:
-    case ISD::OR:
-    case ISD::XOR:      return true;
-    default : return false;
-    
+		Instruction::Add:
+		Instruction::Sub:
+		Instruction::Mul:
+		Instruction::UDiv:
+		Instruction::SDiv:
+		Instruction::URem:
+		Instruction::SRem:
+		Instruction::LShr:
+		Instruction::AShr:
+		Instruction::Shl:
+		Instruction::ICmp:
+		Instruction::And:
+		Instruction::Or:
+		Instruction::Xor: 				return true;
+		default : 								return false; 
   }
   return false;
 }
@@ -235,54 +217,49 @@ bool WideningIntegerArithmetic::IsBinop(unsigned Opcode){
 // TODO check UNOPS
 bool WideningIntegerArithmetic::IsUnop(unsigned Opcode){
   switch(Opcode){
-    default: return false;
-    case ISD::ABS: 
-    case ISD::BSWAP:
-    case ISD::CTTZ:
-    case ISD::CTLZ:
-    case ISD::BITREVERSE:
-    case ISD::PARITY:
-    case ISD::FREEZE:       return true;
-  }
+  	// TODO where is Instruction::Neg???????
+		default: return false; 
+	}
   return false;
 }
 
 bool WideningIntegerArithmetic::IsTruncate(unsigned Opcode){
   switch(Opcode){
-    case ISD::TRUNCATE: return true;
+		case Instruction::Trunc: return true;
     default: break;
   }
   return false;
 }
 
+bool WideningIntegerArithmetic::IsPHI(unsigned Opcode){
+	switch(Opcode){
+		case Instruction::PHI: return true;
+		default: return false;
+	}
+}
+
 bool WideningIntegerArithmetic::IsExtension(unsigned Opcode){
   switch(Opcode){
-    default: break;
-    case ISD::SIGN_EXTEND:
-    case ISD::ZERO_EXTEND:   
-    case ISD::ANY_EXTEND:   
-    case ISD::AssertSext:        // We need to drop them only the first time
-    case ISD::AssertZext:       return true;
+		case Instruction::ZExt: 		
+		case Instruction::SExt: return true;
+		default: return false;
   }
   return false;  
 }
 
 bool WideningIntegerArithmetic::IsStore(unsigned Opcode){
   switch(Opcode){
+		Instruction::Store: return true;
     default: break;
-    case ISD::STORE:                      // TODO we need more? add masked store and others not vectors yet
-    case ISD::MSTORE:
-      return true;
   }
   return false;
 }
 
 bool WideningIntegerArithmetic::IsLoad(unsigned Opcode){
   switch(Opcode){
+		case Instruction::Load:
+      return true;   
     default: break;
-    case ISD::LOAD:
-    case ISD::MLOAD:
-      return true; //  
   }
   return false;
 }
@@ -330,13 +307,9 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
     //dbgs() << " and Visiting Truncation ..\n"; 
     return visitDROP_TRUNC(Node);
   }
-  else if(Opcode == ISD::Constant){
-    //dbgs() << " and Visiting Constant..\n"; 
-    return visitCONSTANT(Node);
-  }
   else{
-    //dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
-    LLVM_DEBUG(dbgs() << "Opcode str is " << OpcodesToStr[Opcode] << "\n");
+    dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
+    LLVM_DEBUG(dbgs() << "Opcode str is" << OpcodesToStr[Opcode] << "\n");
     // default solution so we can initialize all the nodes with some solution set.
     auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 
                 getTargetWidth(), 
@@ -354,24 +327,27 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
 long long int counter = 0;
 
 SmallVector<WideningIntegerSolutionInfo *> 
-WideningIntegerArithmetic::visit_widening(User *U){
+WideningIntegerArithmetic::visit_widening(Instruction *Instr){
  	SolutionSet EmptySols;
 
   if(IsSolved(Inst) ){
-    LLVM_DEBUG(dbgs() << "Node " << Node->getNodeId() << "is Solved");
-    LLVM_DEBUG(dbgs() << " and Opcode str is " << OpcodesToStr[Node->getOpcode()] << "\n"); 
-    return AvailableSolutions[Node]; 
+    LLVM_DEBUG(dbgs() << "Opcode str is " << OpcodesToStr[Instr->getOpcode()] << "\n"); 
+    return AvailableSolutions[Instr]; 
   } 
-  for (const Use* Use_ : U->operands() ){    
-    User *Usr = Use_->getUser(); // #TODO 1 check value size is 1?
-    SolutionSet Sols = visit_widening(Usr);
+  for (Value* V : Instr->operand_values() ){    
+    if(auto *I = dyn_cast<Instruction>(V)){ // #TODO 1 check value size is 1?
+   	 SolutionSet Sols = visit_widening(I);
+		}
+		else if(auto *CI = dyn_cast<ConstantInt>(V)){
+			visitCONSTANT(CI)
+		}
   }
-	if(!U){
+	if(!Instr){
 		//dbgs() << "empty Sols check........!!!!!!!!!!!!!!!!" << '\n';
 		return EmptySols;
 	}
   //dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n";
-  auto CalcSolutions = visitInstruction(U);
+	auto CalcSolutions = visitInstruction(Instr);
 	// #TODO to get the opcode need to check and cast to a Instruction
 	//LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << U->getOpcode() << "\n");
   //dbgs() << "Solved Instruction number !!: " << counter << "\n";
@@ -379,7 +355,7 @@ WideningIntegerArithmetic::visit_widening(User *U){
 	counter++;
   if(CalcSolutions.size() > 0){
     //printNodeSols(CalcSolutions, Node);
-		if(auto search = AvailableSolutions.find(U); search != AvailableSolutions.end()){
+		if(auto search = AvailableSolutions.find(Instr); search != AvailableSolutions.end()){
       //dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
 		}else{
     	AvailableSolutions[U] = CalcSolutions;
@@ -454,7 +430,7 @@ inline IntegerFillType
 
 
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitXOR(SDNode *Node ){
+WideningIntegerArithmetic::visitXOR(Instruction *Instr ){
 
   SolutionSet Set; 
   return Set;
@@ -480,7 +456,7 @@ WideningIntegerArithmetic::visitXOR(SDNode *Node ){
   // { s -> s x s }, {g-> g x g}, { z -> z x z } 
   // We can  choose 
   // Solution 1 s[32]:64 cost 4 + 3, Solution 2 g[32]:64 cost 3 needs sext or zext depends on the fill type of target so total 3 + 1 }
-  // User can decide what solution is appropriate
+  // Instruction can decide what solution is appropriate
   // for example print requires sext to use Solution 2 because upper  // upper bits
   // {i32, i32, i32 } 
   // can we Truncate? 
@@ -520,8 +496,8 @@ bool WideningIntegerArithmetic::isInteger(SDNode *Node){
 
 // Checks whether a SDNode is visited 
 // so we don't visit and solve the same Node again
-bool WideningIntegerArithmetic::IsSolved(SDNode *Node){
-  auto isVisited = solvedNodes.find(Node);
+bool WideningIntegerArithmetic::IsSolved(Instruction *Instr){
+  auto isVisited = solvedNodes.find(Instr);
   if(isVisited != solvedNodes.end())
     return true;
   
@@ -529,9 +505,9 @@ bool WideningIntegerArithmetic::IsSolved(SDNode *Node){
 }
 
 WideningIntegerArithmetic::SolutionSet
-WideningIntegerArithmetic::tryClosure(SDNode *Node, bool Changed){
+WideningIntegerArithmetic::tryClosure(Instruction *Instr, bool Changed){
   auto FillsSize = 0;
-  unsigned Opcode = Node->getOpcode();
+  unsigned Opcode = Instr->getOpcode();
   if(IsBinop(Opcode)){
     FillTypeSet Fills = getFillTypes(Opcode);
     FillsSize = Fills.size();
@@ -551,24 +527,26 @@ WideningIntegerArithmetic::tryClosure(SDNode *Node, bool Changed){
 
 
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::closure(SDNode *Node){
-  auto Sols = AvailableSolutions[Node];
+WideningIntegerArithmetic::closure(Instruction *Instr){
+  auto Sols = AvailableSolutions[Instr];
   bool Changed;
   int i = 0;
   do{
     Changed = false;
-    auto FillsList = visitFILL(Node);
-    auto WidensList = visitWIDEN(Node);
-    auto GarbageWidenList = visitWIDEN_GARBAGE(Node); 
-    auto NarrowList = visitNARROW(Node);
+    auto FillsList = visitFILL(Instr);
+    auto WidensList = visitWIDEN(Instr);
+    auto GarbageWidenList = visitWIDEN_GARBAGE(Instr); 
+    auto NarrowList = visitNARROW(Instr);
 		FillsList.splice(FillsList.end(), WidensList);
 		FillsList.splice(FillsList.end(), GarbageWidenList);
 		FillsList.splice(FillsList.end(), NarrowList);
-    LLVM_DEBUG(dbgs() << "Iteration " << ++i << "---------------------------------------Adding Possible Solutions size is  " << FillsList.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Node->getOpcode()] << '\n');
+    LLVM_DEBUG(dbgs() << "Iteration " << ++i << 
+				"---------------------------------------Adding Possible Solutions size is  " << 
+				FillsList.size() << '\n' << "Opcode to Str is --> " << OpcodesToStr[Instr->getOpcode()] << '\n');
     for(auto PossibleSol : FillsList){
       LLVM_DEBUG(dbgs() << "Trying to Add Possible Sol --> " << *PossibleSol << '\n');
 
-      bool Added = addNonRedudant(AvailableSolutions[Node], PossibleSol);
+      bool Added = addNonRedudant(AvailableSolutions[Instr], PossibleSol);
       //printNodeSols(AvailableSolutions[Node], Node); 
       if(Added){
         Changed = true;
@@ -586,11 +564,14 @@ WideningIntegerArithmetic::closure(SDNode *Node){
 
 inline 
 WideningIntegerArithmetic::FillTypeSet 
-WideningIntegerArithmetic::getOperandFillTypes(SDNode *Node){
+WideningIntegerArithmetic::getOperandFillTypes(Instruction *Instr){
 
   FillTypeSet Set;
-  unsigned Opcode = Node->getOpcode();
-  switch(Opcode){
+  unsigned Opcode = Instruction->getOpcode();
+  return getFillTypes(Opcode);
+
+	// TODO handle the case below.
+/*  switch(Opcode){
     default: break;
     case (ISD::ADD):
     case (ISD::SADDO):{
@@ -609,16 +590,18 @@ WideningIntegerArithmetic::getOperandFillTypes(SDNode *Node){
       }
       return Set;
     }
-  }
-  return getFillTypes(Opcode);
+  }*/
+	
 } 
-   
+  
+
+/* Does llvm have an Unary Operator ?
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitUNOP(SDNode *Node){
+WideningIntegerArithmetic::visitUNOP(Instruction *Instr){
   bool Changed = false;
-  SDValue N0 = Node->getOperand(0);
-  unsigned Opcode = Node->getOpcode();
-  UnaryFillTypeSet AvailableFillTypes = getUnaryFillTypes(Node->getOpcode());
+  SDValue N0 = Instr->getOperand(0);
+  unsigned Opcode = Instr->getOpcode();
+  UnaryFillTypeSet AvailableFillTypes = getUnaryFillTypes(Instr->getOpcode());
   // Available Solutions of child 
   SolutionSet Sols = AvailableSolutions[N0.getNode()];
   for(WideningIntegerSolutionInfo *Sol : Sols){
@@ -635,7 +618,7 @@ WideningIntegerArithmetic::visitUNOP(SDNode *Node){
       continue;
     unsigned char FillTypeWidth = getScalarSize(N0->getValueType(0));
     auto Unop = new WIA_UNOP(Node->getOpcode(), FillType, FillTypeWidth, 
-                w1, /* TODO CHECK */w1 , Sol->getCost(), Node); 
+                w1, w1 , Sol->getCost(), Node); 
     Unop->addOperand(Sol); 
     AvailableSolutions[Node].push_back(Unop);
     Changed = true;
@@ -644,22 +627,22 @@ WideningIntegerArithmetic::visitUNOP(SDNode *Node){
   return tryClosure(Node, Changed);  
 }
 
+*/
+
+
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitCONSTANT(SDNode *Node){
+WideningIntegerArithmetic::visitCONSTANT(ConstantInt *CI){
   SolutionSet Sols;
-  ConstantSDNode *CN = cast<ConstantSDNode>(Node);
-  unsigned bitWidth = CN->getConstantIntValue()->getBitWidth();
+  unsigned bitWidth = CI->getBitWidth();
   auto Sol = new WIA_CONSTANT(Node->getOpcode(), ExtensionChoice,
-    bitWidth, getTargetWidth(), getTargetWidth(), 0, Node);
+    bitWidth, getTargetWidth(), getTargetWidth(), 0, Instr);
   Sols.push_back(Sol);
   return Sols;
 }
   
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitSTORE(SDNode *Node){
+WideningIntegerArithmetic::visitSTORE(Instruction *Instr){
   SolutionSet Sols;
-  StoreSDNode *SD = cast<StoreSDNode>(Node);
-  SDValue N0 = SD->getValue();
   
   unsigned char N0Bits = getScalarSize(N0->getValueType(0));
   unsigned char MemBits = getScalarSize(SD->getMemoryVT());

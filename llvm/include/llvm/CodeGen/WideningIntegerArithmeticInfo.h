@@ -3,7 +3,6 @@
 
 #include <iostream>
 #include "llvm/IR/Instruction.h"
-#inclyde "llvm/IR/User.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -13,512 +12,74 @@ namespace llvm {
 class Instruction;
 
 
-  std::string OpcodesToStr[504] = {
-      "DELETED_NODE",
-      "EntryToken",
-      "TokenFactor",
-      "AssertSext",
-      "AssertZext",
-      "AssertAlign",
-      "BasicBlock",
-      "VALUETYPE",
-      "CONDCODE",
-      "Register",
-      "RegisterMask",
-      "Constant",
-      "ConstantFP",
-      "GlobalAddress",
-      "GlobalTLSAddress",
-      "FrameIndex",
-      "JumpTable",
-      "ConstantPool",
-      "ExternalSymbol",
-      "BlockAddress",
-      "GLOBAL_OFFSET_TABLE",
-      "FRAMEADDR",
-      "RETURNADDR",
-      "ADDROFRETURNADDR",
-      "SPONENTRY",
-      "LOCAL_RECOVER",
-      "READ_REGISTER",
-      "WRITE_REGISTER",
-      "FRAME_TO_ARGS_OFFSET",
-      "EH_DWARF_CFA",
-      "EH_RETURN",
-      "EH_SJLJ_SETJMP",
-      "EH_SJLJ_LONGJMP",
-      "EH_SJLJ_SETUP_DISPATCH",
-      "TargetConstant",
-      "TargetConstantFP",
-      "TargetGlobalAddress",
-      "TargetGlobalTLSAddress",
-      "TargetFrameIndex",
-      "TargetJumpTable",
-      "TargetConstantPool",
-      "TargetExternalSymbol",
-      "TargetBlockAddress",
-      "MCSymbol",
-      "TargetIndex",
-      "INTRINSIC_WO_CHAIN",
-      "INTRINSIC_W_CHAIN",
-      "INTRINSIC_VOID",
-      "CopyToReg",
-      "CopyFromReg",
-      "UNDEF",
-      "FREEZE",
-      "EXTRACT_ELEMENT",
-      "BUILD_PAIR",
-      "MERGE_VALUES",
-      "ADD",
-      "SUB",
-      "MUL",
-      "SDIV",
-      "UDIV",
-      "SREM",
-      "UREM",
-      "SMUL_LOHI",
-      "UMUL_LOHI",
-      "SDIVREM",
-      "UDIVREM",
-      "CARRY_FALSE",
-      "ADDC",
-      "SUBC",
-      "ADDE",
-      "SUBE",
-      "ADDCARRY",
-      "SUBCARRY",
-      "SADDO_CARRY",
-      "SSUBO_CARRY",
-      "SADDO",
-      "UADDO",
-      "SSUBO",
-      "USUBO",
-      "SMULO",
-      "UMULO",
-      "SADDSAT",
-      "UADDSAT",
-      "SSUBSAT",
-      "USUBSAT",
-      "SSHLSAT",
-      "USHLSAT",
-      "SMULFIX",
-      "UMULFIX",
-      "SMULFIXSAT",
-      "UMULFIXSAT",
-      "SDIVFIX",
-      "UDIVFIX",
-      "SDIVFIXSAT",
-      "UDIVFIXSAT",
-      "FADD",
-      "FSUB",
-      "FMUL",
-      "FDIV",
-      "FREM",
-      "STRICT_FADD",
-      "STRICT_FSUB",
-      "STRICT_FMUL",
-      "STRICT_FDIV",
-      "STRICT_FREM",
-      "STRICT_FMA",
-      "STRICT_FSQRT",
-      "STRICT_FPOW",
-      "STRICT_FPOWI",
-      "STRICT_FSIN",
-      "STRICT_FCOS",
-      "STRICT_FEXP",
-      "STRICT_FEXP2",
-      "STRICT_FLOG",
-      "STRICT_FLOG10",
-      "STRICT_FLOG2",
-      "STRICT_FRINT",
-      "STRICT_FNEARBYINT",
-      "STRICT_FMAXNUM",
-      "STRICT_FMINNUM",
-      "STRICT_FCEIL",
-      "STRICT_FFLOOR",
-      "STRICT_FROUND",
-      "STRICT_FROUNDEVEN",
-      "STRICT_FTRUNC",
-      "STRICT_LROUND",
-      "STRICT_LLROUND",
-      "STRICT_LRINT",
-      "STRICT_LLRINT",
-      "STRICT_FMAXIMUM",
-      "STRICT_FMINIMUM",
-      "STRICT_FP_TO_SINT",
-      "STRICT_FP_TO_UINT",
-      "STRICT_SINT_TO_FP",
-      "STRICT_UINT_TO_FP",
-      "STRICT_FP_ROUND",
-      "STRICT_FP_EXTEND",
-      "STRICT_FSETCC",
-      "STRICT_FSETCCS",
-      "FPTRUNC_ROUND",
-      "FMA",
-      "FMAD",
-      "FCOPYSIGN",
-      "FGETSIGN",
-      "FCANONICALIZE",
-      "IS_FPCLASS",
-      "BUILD_VECTOR",
-      "INSERT_VECTOR_ELT",
-      "EXTRACT_VECTOR_ELT",
-      "CONCAT_VECTORS",
-      "INSERT_SUBVECTOR",
-      "EXTRACT_SUBVECTOR",
-      "VECTOR_REVERSE",
-      "VECTOR_SHUFFLE",
-      "VECTOR_SPLICE",
-      "SCALAR_TO_VECTOR",
-      "SPLAT_VECTOR",
-      "SPLAT_VECTOR_PARTS",
-      "STEP_VECTOR",
-      "MULHU",
-      "MULHS",
-      "AVGFLOORS",
-      "AVGFLOORU",
-      "AVGCEILS",
-      "AVGCEILU",
-      "ABDS",
-      "ABDU",
-      "SMIN",
-      "SMAX",
-      "UMIN",
-      "UMAX",
-      "AND",
-      "OR",
-      "XOR",
-      "ABS",
-      "SHL",
-      "SRA",
-      "SRL",
-      "ROTL",
-      "ROTR",
-      "FSHL",
-      "FSHR",
-      "BSWAP",
-      "CTTZ",
-      "CTLZ",
-      "CTPOP",
-      "BITREVERSE",
-      "PARITY",
-      "CTTZ_ZERO_UNDEF",
-      "CTLZ_ZERO_UNDEF",
-      "SELECT",
-      "VSELECT",
-      "SELECT_CC",
-      "SETCC",
-      "SETCCCARRY",
-      "SHL_PARTS",
-      "SRA_PARTS",
-      "SRL_PARTS",
-      "SIGN_EXTEND",
-      "ZERO_EXTEND",
-      "ANY_EXTEND",
-      "TRUNCATE",
-      "SINT_TO_FP",
-      "UINT_TO_FP",
-      "SIGN_EXTEND_INREG",
-      "ANY_EXTEND_VECTOR_INREG",
-      "SIGN_EXTEND_VECTOR_INREG",
-      "ZERO_EXTEND_VECTOR_INREG",
-      "FP_TO_SINT",
-      "FP_TO_UINT",
-      "FP_TO_SINT_SAT",
-      "FP_TO_UINT_SAT",
-      "FP_ROUND",
-      "GET_ROUNDING",
-      "SET_ROUNDING",
-      "FP_EXTEND",
-      "BITCAST",
-      "ADDRSPACECAST",
-      "FP16_TO_FP",
-      "FP_TO_FP16",
-      "STRICT_FP16_TO_FP",
-      "STRICT_FP_TO_FP16",
-      "BF16_TO_FP",
-      "FP_TO_BF16",
-      "FNEG",
-      "FABS",
-      "FSQRT",
-      "FCBRT",
-      "FSIN",
-      "FCOS",
-      "FPOWI",
-      "FPOW",
-      "FLOG",
-      "FLOG2",
-      "FLOG10",
-      "FEXP",
-      "FEXP2",
-      "FCEIL",
-      "FTRUNC",
-      "FRINT",
-      "FNEARBYINT",
-      "FROUND",
-      "FROUNDEVEN",
-      "FFLOOR",
-      "LROUND",
-      "LLROUND",
-      "LRINT",
-      "LLRINT",
-      "FMINNUM",
-      "FMAXNUM",
-      "FMINNUM_IEEE",
-      "FMAXNUM_IEEE",
-      "FMINIMUM",
-      "FMAXIMUM",
-      "FSINCOS",
-      "LOAD",
-      "STORE",
-      "DYNAMIC_STACKALLOC",
-      "BR",
-      "BRIND",
-      "BR_JT",
-      "BRCOND",
-      "BR_CC",
-      "INLINEASM",
-      "INLINEASM_BR",
-      "EH_LABEL",
-      "ANNOTATION_LABEL",
-      "CATCHRET",
-      "CLEANUPRET",
-      "STACKSAVE",
-      "STACKRESTORE",
-      "CALLSEQ_START", // Beginning of a call sequence
-      "CALLSEQ_END",   // End of a call sequence
-      "VAARG",
-      "VACOPY",
-      "VAEND",
-      "VASTART",
-      "PREALLOCATED_SETUP",
-      "PREALLOCATED_ARG",
-      "SRCVALUE",
-      "MDNODE_SDNODE",
-      "PCMARKER",
-      "READCYCLECOUNTER",
-      "HANDLENODE",
-      "INIT_TRAMPOLINE",
-      "ADJUST_TRAMPOLINE",
-      "TRAP",
-      "DEBUGTRAP",
-      "UBSANTRAP",
-      "PREFETCH",
-      "ARITH_FENCE",
-      "MEMBARRIER",
-      "ATOMIC_FENCE",
-      "ATOMIC_LOAD",
-      "ATOMIC_STORE",
-      "ATOMIC_CMP_SWAP",
-      "ATOMIC_CMP_SWAP_WITH_SUCCESS",
-      "ATOMIC_SWAP",
-      "ATOMIC_LOAD_ADD",
-      "ATOMIC_LOAD_SUB",
-      "ATOMIC_LOAD_AND",
-      "ATOMIC_LOAD_CLR",
-      "ATOMIC_LOAD_OR",
-      "ATOMIC_LOAD_XOR",
-      "ATOMIC_LOAD_NAND",
-      "ATOMIC_LOAD_MIN",
-      "ATOMIC_LOAD_MAX",
-      "ATOMIC_LOAD_UMIN",
-      "ATOMIC_LOAD_UMAX",
-      "ATOMIC_LOAD_FADD",
-      "ATOMIC_LOAD_FSUB",
-      "ATOMIC_LOAD_FMAX",
-      "ATOMIC_LOAD_FMIN",
-      "ATOMIC_LOAD_UINC_WRAP",
-      "ATOMIC_LOAD_UDEC_WRAP",
-      "MLOAD",
-      "MSTORE",
-      "MGATHER",
-      "MSCATTER",
-      "LIFETIME_START",
-      "LIFETIME_END",
-      "GC_TRANSITION_START",
-      "GC_TRANSITION_END",
-      "GET_DYNAMIC_AREA_OFFSET",
-      "PSEUDO_PROBE",
-      "VSCALE",
-      "VECREDUCE_SEQ_FADD",
-      "VECREDUCE_SEQ_FMUL",
-      "VECREDUCE_FADD",
-      "VECREDUCE_FMUL",
-      "VECREDUCE_FMAX",
-      "VECREDUCE_FMIN",
-      "VECREDUCE_ADD",
-      "VECREDUCE_MUL",
-      "VECREDUCE_AND",
-      "VECREDUCE_OR",
-      "VECREDUCE_XOR",
-      "VECREDUCE_SMAX",
-      "VECREDUCE_SMIN",
-      "VECREDUCE_UMAX",
-      "VECREDUCE_UMIN",
-      "STACKMAP",
-      "PATCHPOINT",
-      "llvm.vp.add(x,y,mask,vlen)",
-      "llvm.vp.and(x,y,mask,vlen)",
-      "llvm.vp.ashr(x,y,mask,vlen)",
-      "llvm.vp.lshr(x,y,mask,vlen)",
-      "llvm.vp.mul(x,y,mask,vlen)",
-      "llvm.vp.or(x,y,mask,vlen)",
-      "llvm.vp.sdiv(x,y,mask,vlen)",
-      "llvm.vp.shl(x,y,mask,vlen)",
-      "llvm.vp.srem(x,y,mask,vlen)",
-      "llvm.vp.sub(x,y,mask,vlen)",
-      "llvm.vp.udiv(x,y,mask,vlen)",
-      "llvm.vp.urem(x,y,mask,vlen)",
-      "llvm.vp.xor(x,y,mask,vlen)",
-      "llvm.vp.smin(x,y,mask,vlen)",
-      "llvm.vp.smax(x,y,mask,vlen)",
-      "llvm.vp.umin(x,y,mask,vlen)",
-      "llvm.vp.umax(x,y,mask,vlen)",
-      "llvm.vp.abs(x,mask,vlen,is_int_min_poison)",
-      "llvm.vp.bswap(x,mask,vlen)",
-      "llvm.vp.bitreverse(x,mask,vlen)",
-      "llvm.vp.ctpop(x,mask,vlen)",
-      "llvm.vp.ctlz(x,mask,vlen, is_zero_poison)",
-      "llvm.vp.cttz(x,mask,vlen, is_zero_poison)",
-      "llvm.vp.fshl(x,y,z,mask,vlen)",
-      "llvm.vp.fshr(x,y,z,mask,vlen)",
-      "llvm.vp.fadd(x,y,mask,vlen)",
-      "llvm.vp.fsub(x,y,mask,vlen)",
-      "llvm.vp.fmul(x,y,mask,vlen)",
-      "llvm.vp.fdiv(x,y,mask,vlen)",
-      "llvm.vp.frem(x,y,mask,vlen)",
-      "llvm.vp.fneg(x,mask,vlen)",
-      "llvm.vp.fabs(x,mask,vlen)",
-      "llvm.vp.sqrt(x,mask,vlen)",
-      "llvm.vp.fma(x,y,z,mask,vlen)",
-      "llvm.vp.fmuladd(x,y,z,mask,vlen)",
-      "llvm.vp.copysign(x,y,mask,vlen)",
-      "llvm.vp.minnum(x, y, mask,vlen)",
-      "llvm.vp.maxnum(x, y, mask,vlen)",
-      "llvm.vp.ceil(x,mask,vlen)",
-      "llvm.vp.floor(x,mask,vlen)",
-      "llvm.vp.round(x,mask,vlen)",
-      "llvm.vp.roundeven(x,mask,vlen)",
-      "llvm.vp.roundtozero(x,mask,vlen)",
-      "llvm.vp.rint(x,mask,vlen)",
-      "llvm.vp.nearbyint(x,mask,vlen)",
-      "llvm.vp.fptoui(x,mask,vlen)",
-      "llvm.vp.fptosi(x,mask,vlen)",
-      "llvm.vp.uitofp(x,mask,vlen)",
-      "llvm.vp.sitofp(x,mask,vlen)",
-      "llvm.vp.fptrunc(x,mask,vlen)",
-      "llvm.vp.trunc(x,mask,vlen)",
-      "llvm.vp.zext(x,mask,vlen)",
-      "llvm.vp.sext(x,mask,vlen)",
-      "llvm.vp.ptrtoint(x,mask,vlen)",
-      "llvm.vp.inttoptr(x,mask,vlen)",
-      "llvm.vp.fcmp(x,y,cc,mask,vlen)",
-      "llvm.vp.icmp(x,y,cc,mask,vlen)",
-      "llvm.vp.store(val,ptr,mask,vlen)",
-      "llvm.experimental.vp.strided.store(val,ptr,stride,mask,vlen)",
-      "llvm.vp.scatter(ptr,val,mask,vlen)",
-      "llvm.vp.load(ptr,mask,vlen)",
-      "llvm.experimental.vp.strided.load(ptr,stride,mask,vlen)",
-      "llvm.vp.gather(ptr,mask,vlen)",
-      "llvm.vp.reduce.add(start,x,mask,vlen)",
-      "llvm.vp.reduce.mul(start,x,mask,vlen)",
-      "llvm.vp.reduce.and(start,x,mask,vlen)",
-      "llvm.vp.reduce.or(start,x,mask,vlen)",
-      "llvm.vp.reduce.xor(start,x,mask,vlen)",
-      "llvm.vp.reduce.smax(start,x,mask,vlen)",
-      "llvm.vp.reduce.smin(start,x,mask,vlen)",
-      "llvm.vp.reduce.umax(start,x,mask,vlen)",
-      "llvm.vp.reduce.umin(start,x,mask,vlen)",
-      "llvm.vp.reduce.fmax(start,x,mask,vlen)",
-      "llvm.vp.reduce.fmin(start,x,mask,vlen)",
-      "llvm.vp.reduce.fadd(start,x,mask,vlen)",
-      "llvm.vp.reduce.fmul(start,x,mask,vlen)",
-      "llvm.vp.select(cond,on_true,on_false,vlen)",
-      "llvm.vp.merge(cond,on_true,on_false,pivot)",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-      "UNKNOWN",
-  };
+  std::string OpcodesToStr[67] = {
+  	"Empty Instr",
+		"Return",
+		"BranchInst",
+		"SwitchInst",
+		"IndirectBranch",
+		"InvokeInst",
+		"ResumeInst",
+		"UnreachableInst",
+		"CleanupReturnInst",
+		"CatchReturnInst",
+		"CatchSwitchInst",
+		"CallBrInst",// A call-site terminator ",
+		"UnaryOperator",
+		"Add",
+		"FAdd",
+		"Sub",
+		"FSub",
+		"Mul",
+		"FMul",
+		"UDiv",
+		"SDiv",
+		"FDiv",
+		"URem",
+		"SRem",
+		"FRem",
+		"Shl",
+		"LShr",
+		"AShr",
+		"And",
+		"Or",
+		"Xor",
+		"Alloca",
+		"Load",
+		"Store",
+		"GetElementPtr",
+		"Fence",
+		"AtomicCmpXchg",
+		"AtomicRMW",
+		"Trunc",
+		"ZExt",
+		"SExt",
+		"FPToUI",
+		"FPToSI",
+		"UIToFP",
+		"SIToFP",
+		"FPTrunc",
+		"FPExt",
+		"PtrToInt",
+		"IntToPtr",
+		"BitCast",
+		"AddrSpaceCast",
+		"CleanupPad",
+		"CatchPad",
+		"ICmp",
+		"FCmp",
+		"PHI",
+		"Call",
+		"Select",
+		"UserOp1",
+		"UserOp2",
+		"VAArg",
+		"ExtractElement",
+		"InsertElement",
+		"ShuffleVector",
+		"ExtractValue",
+		"InsertValue",
+	};
 
 
 
@@ -581,13 +142,13 @@ protected:
   unsigned short     UpdatedWidth;
   // The cost of the solution
   short int         Cost;
-  // Pointer to the User that mapped to this solutionInfo
-  User       *U;
+  // Pointer to the Instruction that mapped to this solutionInfo
+  Instruction       *Instr;
 	// number of operands
 	short int 				NumOperands;
 private:  
   WIAKind Kind;
-  // TODO can a User have more than 4 Operands? 
+  // TODO can a Instruction have more than 4 Operands? 
   SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
 public:
 
@@ -595,24 +156,24 @@ public:
   WideningIntegerSolutionInfo(WIAKind Kind_): Kind(Kind_) {} 
   WideningIntegerSolutionInfo(unsigned char Opcode_, IntegerFillType FillType_,
   unsigned short FillTypeWidth_, unsigned short Width_, unsigned short UpdatedWidth_, 
-    short int Cost_, WIAKind Kind_, User *U_): 
+    short int Cost_, WIAKind Kind_, Instruction *Instr_): 
   Opcode(Opcode_),  FillType(FillType_), 
   FillTypeWidth(FillTypeWidth_), Width(Width_),
   UpdatedWidth(UpdatedWidth_),
-  Cost(Cost_), U(U_), Kind(Kind_) {}
+  Cost(Cost_), Instr(Instr_), Kind(Kind_) {}
  
   WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &other)
   : Opcode(other.getOpcode()), FillType(other.getFillType()),
     FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
     UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
-    U(other.getUser()) , Kind(other.getKind()),
+    Instr(other.getInstruction()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
    
 	WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &&other)
 		: Opcode(other.getOpcode()), FillType(other.getFillType()),
     FillTypeWidth(other.getFillTypeWidth()), Width(other.getWidth()),
     UpdatedWidth(other.getUpdatedWidth()), Cost(other.getCost()),
-    U(other.getUser()) , Kind(other.getKind()),
+    Instr(other.getInstruction()) , Kind(other.getKind()),
     Operands(other.getOperands()) {}
  
 
@@ -626,10 +187,14 @@ public:
 
 
   bool operator==(const WideningIntegerSolutionInfo &o){
-    return Kind == o.getKind() && Opcode == o.getOpcode() && 
+    bool MayEqual = Kind == o.getKind() && Opcode == o.getOpcode() && 
            Cost == o.getCost() && Width == o.getWidth() &&
            UpdatedWidth == o.getUpdatedWidth();
-  } 
+		if(MayEqual){
+			return this.getOperands() == o.getOperands();
+		} 
+		return false;
+	} 
 
   
   short int getCost(void) const {
@@ -691,12 +256,12 @@ public:
     FillTypeWidth = FillType_;
   }
 
-  void setUser(User *U_){
-    U = U_;
+  void setInstruction(Instruction *Instr_){
+    Instr = Instr_;
   }
   
-  User* getUser(void) const {
-    return U;
+  Instruction* getInstruction(void) const {
+    return Instr;
   }
  
   // Returns 0 if no one is redudant
@@ -751,10 +316,10 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
   WIA_BINOP(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_BINOP, U_) {}
+        UpdatedWidth_, Cost_, WIAK_BINOP, Instr_) {}
   
   static inline bool classof(WIA_BINOP const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -775,10 +340,10 @@ class WIA_FILL : public WideningIntegerSolutionInfo
   WIA_FILL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_FILL, U_) {} 
+        UpdatedWidth_, Cost_, WIAK_FILL, Instr_) {} 
 
   static inline bool classof(WIA_FILL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -798,10 +363,10 @@ class WIA_WIDEN : public WideningIntegerSolutionInfo
   WIA_WIDEN(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_WIDEN, U_) {}
+        UpdatedWidth_, Cost_, WIAK_WIDEN, Instr_) {}
   
   static inline bool classof(WIA_WIDEN const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -820,10 +385,10 @@ class WIA_WIDEN_GARBAGE : public WideningIntegerSolutionInfo
   WIA_WIDEN_GARBAGE(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_WIDEN_GARBAGE, U_) {}
+        UpdatedWidth_, Cost_, WIAK_WIDEN_GARBAGE, Instr_) {}
 
   static inline bool classof(WIA_WIDEN_GARBAGE const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -843,10 +408,10 @@ class WIA_NARROW : public WideningIntegerSolutionInfo
   WIA_NARROW(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_ , FillTypeWidth_ , Width_, 
-        UpdatedWidth_, Cost_, WIAK_NARROW, U_){}
+        UpdatedWidth_, Cost_, WIAK_NARROW, Instr_){}
 
   static inline bool classof(WIA_NARROW const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -867,10 +432,10 @@ class WIA_DROP_EXT : public WideningIntegerSolutionInfo
   WIA_DROP_EXT(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_DROP_EXT, U_) {}
+        UpdatedWidth_, Cost_, WIAK_DROP_EXT, Instr_) {}
 
   static inline bool classof(WIA_DROP_EXT const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -891,10 +456,10 @@ class WIA_DROP_LOCOPY : public WideningIntegerSolutionInfo
   WIA_DROP_LOCOPY(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_,
-        UpdatedWidth_, Cost_, WIAK_DROP_LOCOPY, U_) {}
+        UpdatedWidth_, Cost_, WIAK_DROP_LOCOPY, Instr_) {}
 
   static inline bool classof(WIA_DROP_LOCOPY const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -915,10 +480,10 @@ class WIA_DROP_LOIGNORE : public WideningIntegerSolutionInfo
   WIA_DROP_LOIGNORE(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_DROP_LOIGNORE, U_) {}
+        UpdatedWidth_, Cost_, WIAK_DROP_LOIGNORE, Instr_) {}
 
   static inline bool classof(WIA_DROP_LOIGNORE const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -939,10 +504,10 @@ class WIA_EXTLO : public WideningIntegerSolutionInfo
   WIA_EXTLO(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_EXTLO, U_) {}
+        UpdatedWidth_, Cost_, WIAK_EXTLO, Instr_) {}
 
   static inline bool classof(WIA_EXTLO const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -963,10 +528,10 @@ class WIA_SUBSUME_FILL : public WideningIntegerSolutionInfo
   WIA_SUBSUME_FILL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_SUBSUME_FILL, U_) {}
+        UpdatedWidth_, Cost_, WIAK_SUBSUME_FILL, Instr_) {}
 
   static inline bool classof(WIA_SUBSUME_FILL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -987,10 +552,10 @@ class WIA_SUBSUME_INDEX : public WideningIntegerSolutionInfo
   WIA_SUBSUME_INDEX(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_SUBSUME_INDEX, U_) {}
+        UpdatedWidth_, Cost_, WIAK_SUBSUME_INDEX, Instr_) {}
 
   static inline bool classof(WIA_SUBSUME_INDEX const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -1011,10 +576,10 @@ class WIA_NATURAL : public WideningIntegerSolutionInfo
   WIA_NATURAL(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_NATURAL, U_) {}
+        UpdatedWidth_, Cost_, WIAK_NATURAL, Instr_) {}
 
   static inline bool classof(WIA_NATURAL const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -1036,10 +601,10 @@ class WIA_LOAD : public WideningIntegerSolutionInfo
   WIA_LOAD(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_LOAD, U_) {}
+        UpdatedWidth_, Cost_, WIAK_LOAD, Instr_) {}
 
   static inline bool classof(WIA_LOAD const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -1059,10 +624,10 @@ class WIA_STORE : public WideningIntegerSolutionInfo
   WIA_STORE(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_STORE, U_) {}
+        UpdatedWidth_, Cost_, WIAK_STORE, Instr_) {}
 
   static inline bool classof(WIA_STORE const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -1082,10 +647,10 @@ class WIA_UNOP : public WideningIntegerSolutionInfo
   WIA_UNOP(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_UNOP, U_) {}
+        UpdatedWidth_, Cost_, WIAK_UNOP, Instr_) {}
 
   static inline bool classof(WIA_UNOP const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
@@ -1105,10 +670,10 @@ class WIA_CONSTANT : public WideningIntegerSolutionInfo
   WIA_CONSTANT(unsigned char Opcode_, IntegerFillType FillType_,
             unsigned short FillTypeWidth_,
             unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, User *U_): 
+            short int Cost_, Instruction *Instr_): 
       WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
         Opcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_CONSTANT, U_) {}
+        UpdatedWidth_, Cost_, WIAK_CONSTANT, Instr_) {}
 
   static inline bool classof(WIA_CONSTANT const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base){
