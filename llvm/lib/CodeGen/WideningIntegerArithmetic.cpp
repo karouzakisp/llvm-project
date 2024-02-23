@@ -30,8 +30,10 @@
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Pass.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Analysis/ValueTracking.h"
 
 
 #define DEBUG_TYPE "WideningIntegerArithmetic"
@@ -45,7 +47,10 @@ namespace {
 
 
 class WideningIntegerArithmetic : public FunctionPass {
+	const TargetMachine *TM = nullptr;
   const TargetLowering *TLI = nullptr; 
+	const TargetTransformInfo *TTI = nullptr;
+	const DataLayout *DL = nullptr;
 
   public:
     WideningIntegerArithmetic(): FunctionPass(ID) {}
@@ -79,9 +84,9 @@ class WideningIntegerArithmetic : public FunctionPass {
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
-  
+
     TargetWidthsMap TargetWidths;
-    
+				    
    
  
     DenseMap<unsigned, UnaryFillTypeSet>  UnaryFillTypesMap;
@@ -100,8 +105,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     FillTypeSet getOperandFillTypes(Instruction *Instr);
   
     void setFillType(Type* SrcTy, Type* DstTy);  
-    bool isInteger(Instruction *U);
-    bool isSolved(Instruction *U);
+    bool isSolved(Instruction *Instr);
 
     bool addNonRedudant(SolutionSet &Solutions, 
                         WideningIntegerSolutionInfo* GeneratedSol);
@@ -134,7 +138,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
-    unsigned int getTargetWidth();
+    unsigned int RegisterBitwidth = 0; 
 
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
@@ -150,8 +154,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     // Helper functions 
     inline IntegerFillType getIntFillTypeFromLoad(ISD::LoadExtType ExtType); 
     inline IntegerFillType getLoadFillType(Instruction *Instr);
-    inline unsigned int getScalarSize(const TargetLowering &TLI, 
-				const Type *Typ, const DataLayout &DL) const;
+    inline unsigned int getScalarSize(const Type *Typ) const;
     inline unsigned  getExtensionChoice(enum IntegerFillType ExtChoice);   
     inline unsigned int getExtCost(Instruction *Instr, 
                 WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize);
@@ -180,8 +183,8 @@ void WideningIntegerArithmetic::printInstrSols(SolutionSet Sols,
 	LLVM_DEBUG(dbgs() << "=======================================================" << "\n");
 }
 
-inline unsigned int WideningIntegerArithmetic::getScalarSize(
-		const Type *Typ, const TargetLowering &TLI, const DataLayout &DL) const {
+inline unsigned int WideningIntegerArithmetic::getScalarSize(const Type *Typ) 
+	const {
 	EVT VT = TLI.getValueType(DL, Typ);
   return VT.getScalarSizeInBits(); // TODO check
 }
@@ -279,41 +282,41 @@ long int ExtCounter = 0;
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
   SolutionSet Solutions;
-  unsigned Opcode = Node->getOpcode();
+  unsigned Opcode = Instr->getOpcode();
   
   if(IsBinop(Opcode)){
     //dbgs() << " and Visiting Binop..\n"; 
-    return visitBINOP(Node);
+    return visitBINOP(Instr)
   }
   else if(IsUnop(Opcode)){
     //dbgs() << " and Visiting Unop...\n"; 
-    return visitUNOP(Node);
+    return visitUNOP(Instr);
   }
   else if(IsLoad(Opcode)){
     //dbgs() << " and Visiting Load...\n"; 
-    return visitLOAD(Node);
+    return visitLOAD(Instr);
   }
   else if(IsStore(Opcode)){
     //dbgs() << " and Visting Store...\n"; 
-    return visitSTORE(Node);
+    return visitSTORE(Instr);
   }
   else if(IsExtension(Opcode)){
     ExtCounter++;
     //dbgs() << " and Visiting Extension...\n"; 
-    return visitDROP_EXT(Node);
+    return visitDROP_EXT(Instr);
   }
   else if(IsTruncate(Opcode)){
     TruncCounter++; 
     //dbgs() << " and Visiting Truncation ..\n"; 
-    return visitDROP_TRUNC(Node);
+    return visitDROP_TRUNC(Instr);
   }
   else{
     dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
     LLVM_DEBUG(dbgs() << "Opcode str is" << OpcodesToStr[Opcode] << "\n");
     // default solution so we can initialize all the nodes with some solution set.
     auto Sol = new WideningIntegerSolutionInfo(Opcode, ANYTHING, 
-                getTargetWidth(), 
-                getTargetWidth(), /* TODO CHECK */getTargetWidth() , 
+                RegisterBitWidth, 
+                RegisterBitWidth, /* TODO CHECK */RegisterBitWidth , 
                 0, WIAK_UNKNOWN, Instr);
     Solutions.push_back(Sol); 
   }
@@ -339,7 +342,7 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
    	 SolutionSet Sols = visit_widening(I);
 		}
 		else if(auto *CI = dyn_cast<ConstantInt>(V)){
-			visitCONSTANT(CI)
+			visitCONSTANT(CI);
 		}
   }
 	if(!Instr){
@@ -473,30 +476,34 @@ void WideningIntegerArithmetic::setFillType(EVT SrcVT, EVT DstVT){
   }
 }
 
-void WideningIntegerArithmetic::solve(CodeGenOpt::Level OL){
+void WideningIntegerArithmetic::solve(Function &F){
 
-  ///  if(OL.getLevel != Aggressive)
-  ///  return;
- 
-  SDValue Root = DAG.getRoot();
-  setFillType(Root.getValueType(), Root.getValueType());
+ 	// TODO how to set filltype of Target Machine??
+  //setFillType(Root.getValueType(), Root.getValueType());
   initOperatorsFillTypes();
+	DL = F.getParent()->getDataLayout();
+	TM = &getAnalysis<TargetPassConfig>().getTM<TargetMachine>();
+	const TargetSubtargetInfo *SubtargetInfo = TM->getSubtargetImpl(F);
+	TLI = SubtargetInfo->getTargetLowering();
+ 	TTI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTTI(F);	
 
-  for (SDNode &Node : DAG.allnodes()){
-    if(!IsSolved(&Node)  && isInteger(&Node) ){
-      visit_widening(&Node);  
-    }
-    
+
+  for (BasicBlock &BB : F){
+		for(Instruction &I : BB){
+			if(!IsSolved(&I))
+				continue;
+
+			if(isa<IntegerType>(I.getType()) ){
+				visit_widening(&Node);  
+			}
+		} 
   }
 } 
 
-bool WideningIntegerArithmetic::isInteger(SDNode *Node){
-  return Node->getValueType(0).isInteger();
-}
 
 // Checks whether a SDNode is visited 
 // so we don't visit and solve the same Node again
-bool WideningIntegerArithmetic::IsSolved(Instruction *Instr){
+inline bool WideningIntegerArithmetic::IsSolved(Instruction *Instr){
   auto isVisited = solvedNodes.find(Instr);
   if(isVisited != solvedNodes.end())
     return true;
@@ -644,12 +651,11 @@ WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::visitSTORE(Instruction *Instr){
   SolutionSet Sols;
   
-  unsigned char N0Bits = getScalarSize(N0->getValueType(0));
-  unsigned char MemBits = getScalarSize(SD->getMemoryVT());
-  auto N0Sols = AvailableSolutions[N0.getNode()];
+  unsigned char N0Bits = getScalarSize(Instr->getType());
+  auto N0Sols = AvailableSolutions[Instr];
   for(WideningIntegerSolutionInfo *Sol : N0Sols ){
     auto StoreSol = new WIA_STORE(Node->getOpcode(), Sol->getFillType(),
-          MemBits, N0Bits, MemBits, Sol->getCost(), Node);
+          N0Bits, N0Bits, N0Bits, Sol->getCost(), Node);
     Sols.push_back(StoreSol);
   }
   return Sols;   
@@ -684,18 +690,14 @@ inline IntegerFillType WideningIntegerArithmetic::getLoadFillType(SDNode *Node){
 }
 
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitLOAD(SDNode *Node){
+WideningIntegerArithmetic::visitLOAD(Instruction *Instr){
 
   SolutionSet Sols;
-  // TODO very far in the future distiguish load that the users of the load 
-  // use only a smaller width and ignore the upper bits
 
-  // TODO do we need to return multiple loads? 
-	// Probably yes TODO check!
 
-  IntegerFillType FillType = getLoadFillType(Node); 
+  IntegerFillType FillType = getLoadFillType(Instr); 
   
-  unsigned int Width = getScalarSize(Node->getValueType(0));
+  unsigned int Width = getScalarSize(Instr->getValueType(0));
   int FillTypeWidth = Width; 
   auto WIALoad = new WIA_LOAD(Node->getOpcode(), FillType, FillTypeWidth,
                 Width, FillTypeWidth, 0, Node);
@@ -719,21 +721,23 @@ WideningIntegerArithmetic::visitLOAD(SDNode *Node){
 }
   
 
+
+// TODO not done yet
 inline bool
-WideningIntegerArithmetic::mayOverflow(SDNode *Node){
+WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
+	
   unsigned Opcode;
   SDValue N0 = Node->getOperand(0);
   SDValue N1 = Node->getOperand(1);
   Opcode = Node->getOpcode();
   switch(Opcode){
-    case (ISD::ADD):
-    case (ISD::UADDO):
-    case (ISD::SADDO):
-    case (ISD::UADDSAT):
-    case (ISD::ADDC):
-    case (ISD::ADDCARRY): return DAG.computeOverflowKind(N0, N1) != 
-                                 SelectionDAG::OFK_Never;
-    default:
+		case Instruction::Add:
+		case Instruction::SDiv:
+		case Instruction::UDiv:
+		case Instruction::Mul:
+		case Instruction::URem:
+		case Instruction::SRem: 
+		default:
       return false; 
   }
 } 
@@ -743,24 +747,41 @@ WideningIntegerArithmetic::mayOverflow(SDNode *Node){
 // check IsRedudant uses fillTypeWidth 
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitBINOP(SDNode* Node){
- 
-  bool AddedSol = false; 
-  SDNode *N0 = Node->getOperand(0).getNode();
-  SDNode *N1 = Node->getOperand(1).getNode();
-  
+WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
+	
   SolutionSet newSolutions;
+  
+	Value *V0 = Binop->getOperand(0);
+  Value *V1 = Binop->getOperand(1);
+	if(!isa<Instruction>(V0) || !isa<ConstantInt>(V0)){
+		dbgs() << "Error in binop not a constant or something" << '\n';
+		return Sols;	
+	}
+	if(!isa<Instruction>(V1) || !isa<ConstantInt>(V1)){
+		dbgs() << "Error in binop not a constant or something" << '\n';
+		return Sols;
+	}
+  
+  bool AddedSol = false; 
   // get All the available solutions from nodes 
   SmallVector<WideningIntegerSolutionInfo*> LeftSols = 
                                               AvailableSolutions[N0];
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
                                               AvailableSolutions[N1];
   
+	if(!isa<Value>(Binop)){
+		return Sols;
+	}	
+	auto VBinop = dyn_cast<Value>(Binop) 
   unsigned Opcode = Node->getOpcode();
-  // TODO check
-  WideningIntegerSolutionInfo *defaultSol = new WIA_BINOP(Opcode, ExtensionChoice, getScalarSize(Node->getValueType(0)),
-     /* OldWidth*/ getScalarSize(N0->getValueType(0)), 
-     getTargetWidth() , /* Cost */ 0, Node); 
+	unsigned int addWidth = getScalarsize(Instr->getType());
+	KnownBits Known = computeKnownBits(VBinop, 0, Binop);
+	BinopFillTypeWidth = Known.getBitWidth();	
+	assert(addWidth > Known.getBitWidth() && "Error FillType cannot be bigger than BinopWidth" ); 
+  WideningIntegerSolutionInfo *defaultSol = new WIA_BINOP(Opcode, 
+			ExtensionChoice, 
+			/*FillTypeWidth*/ BinopFillTypeWidth, /* OldWidth*/ addwidth , 
+			addWidth , /* Cost */ 0, Node); 
   AvailableSolutions[Node].push_back(defaultSol);
 
   LLVM_DEBUG(dbgs() << "Operand 0 is --> " << OpcodesToStr[N0->getOpcode()]<< "\n");
