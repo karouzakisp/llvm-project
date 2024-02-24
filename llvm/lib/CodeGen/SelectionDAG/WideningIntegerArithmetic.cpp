@@ -219,7 +219,6 @@ bool WideningIntegerArithmetic::IsBinop(unsigned Opcode){
 // TODO check UNOPS
 bool WideningIntegerArithmetic::IsUnop(unsigned Opcode){
   switch(Opcode){
-    default: return false;
     case ISD::ABS: 
     case ISD::BSWAP:
     case ISD::CTTZ:
@@ -227,6 +226,7 @@ bool WideningIntegerArithmetic::IsUnop(unsigned Opcode){
     case ISD::BITREVERSE:
     case ISD::PARITY:
     case ISD::FREEZE:       return true;
+    default: return false;
   }
   return false;
 }
@@ -758,7 +758,46 @@ WideningIntegerArithmetic::mayOverflow(SDNode *Node){
       return false; 
   }
 } 
- 
+
+
+WideningIntegerArithmetic::SolutionSet 
+WideningIntegerArithmetic::getLegalSolutions(SDNode *Node){
+  
+  SmallVector<SDUse *, 4> Users;
+  SmallVector<SolutionSet, 4> UsersSolution;
+  std::vector<SolutionSet> Combinations;
+  if(Node->uses().size() == 0 ){
+    return Combinations;
+  }
+
+  for(SDUse &Use : Node->uses()){
+    auto *NodeUser = Use.getNode();
+    UsersSolution.push_back(AvailableSolutions[NodeUser]);
+    Users.push_back(NodeUser);
+  }
+  SDNode *User = Users[0];
+  for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]){
+    SmallVector<SDNode *, 3> Users_without = Users;
+    auto UserPos = std::find(Users.begin(), Users.end(), User);
+    Users_without.erase(UserPos);
+    SolutionSet OneCombination;
+    bool all_matching = true;
+    for(SDNode *User1 : Users_without){
+      for(WideningIntegerSolutionInfo *Sol1 : AvailableSolutions[User]){
+        if(isMatching(Sol, Sol1)){
+          OneCombination.push_back(Sol1);
+        }else{
+          all_matching = false;
+        }
+      }
+    }
+    if(all_matching){
+      Combinations.push_back(OneCombination);
+    }
+    OneCombination.clear();
+  }
+  return Combinations;
+}
 
 
 // check IsRedudant uses fillTypeWidth 

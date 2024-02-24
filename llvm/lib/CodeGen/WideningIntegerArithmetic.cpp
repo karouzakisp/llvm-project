@@ -23,6 +23,8 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/Use.h"
+#include "llvm/IR/User.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
@@ -51,6 +53,7 @@ class WideningIntegerArithmetic : public FunctionPass {
   const TargetLowering *TLI = nullptr; 
 	const TargetTransformInfo *TTI = nullptr;
 	const DataLayout *DL = nullptr;
+  const LLVMContext &Ctx;
 
   public:
     WideningIntegerArithmetic(): FunctionPass(ID) {}
@@ -118,14 +121,14 @@ class WideningIntegerArithmetic : public FunctionPass {
 
     SolutionSet visitXOR(Instruction *Instr);
     SolutionSet visitInstruction(Instruction *Instr);
-    SolutionSet visitBINOP(Instruction *Instr);
+    SolutionSet visitBINOP(BinaryOperator *Binop);
     SolutionSet visitLOAD(Instruction *Instr);
     SolutionSet visitSTORE(Instruction *Instr);
     SolutionSet visitUNOP(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> visitFILL(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> visitWIDEN(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> 
-			visitWIDEN_GARBAGE(Instruction *Instr);
+		  visitWIDEN_GARBAGE(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> visitNARROW(Instruction *Instr);
     SolutionSet visitDROP_EXT(Instruction *Instr);
     SolutionSet visitDROP_TRUNC(Instruction *Instr);
@@ -161,6 +164,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     void initOperatorsFillTypes();
     void printInstrSols(SolutionSet Sols, Instruction *Instr);
     inline Type* getTypeFromInteger(unsigned char Integer);
+    inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Instruction *Instr);
 
     bool mayOverflow(Instruction *Instr);
 };
@@ -267,13 +271,6 @@ bool WideningIntegerArithmetic::IsLoad(unsigned Opcode){
   return false;
 }
 
-bool WideningIntegerArithmetic::IsLit(unsigned Opcode){
-  switch(Opcode){
-    default: break;
-    case ISD::Constant: return true; 
-  }
-  return false;
-}
 
 
 long int TruncCounter = 0;
@@ -486,7 +483,7 @@ void WideningIntegerArithmetic::solve(Function &F){
 	const TargetSubtargetInfo *SubtargetInfo = TM->getSubtargetImpl(F);
 	TLI = SubtargetInfo->getTargetLowering();
  	TTI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTTI(F);	
-
+  Ctx = F.getContext();
 
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
@@ -741,8 +738,60 @@ WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
       return false; 
   }
 } 
- 
 
+
+WideningIntegerArithmetic::SolutionSet
+WideningIntegerArithmetic::getLegalSolutions(Instruction *Instr){
+
+  SmallVector<Use *, 4> IUsers;
+  SmallVector<SolutionSet, 4> UsersSolution;
+  std::vector<SolutionSet> Combinations;
+  if(Instruction->uses().size() == 0 ){
+    return Combinations;
+  }
+
+  for(auto &Use : Instr->uses()){
+    Instruction *IUser = cast<Instruction>(Use.getUser());
+    UsersSolution.push_back(AvailableSolutions[IUser]);
+    IUsers.push_back(IUser);
+  }
+  Instruction *User = Users[0];
+  for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]){
+    SmallVector<Instruction *, 3> Users_without = Users;
+    auto UserPos = std::find(Users.begin(), Users.end(), User);
+    Users_without.erase(UserPos);
+    SolutionSet OneCombination.push_back(Sol);
+    bool all_matching = true;
+    for(Instruction *IUser1 : Users_without){
+      for(WideningIntegerSolutionInfo *Sol1 : AvailableSolutions[IUser1]){
+        if(isMatching(Sol, Sol1)){
+          OneCombination.push_back(Sol1);
+        }else{
+          all_matching = false;
+        }
+      }
+    }
+    if(all_matching){
+      Combinations.push_back(OneCombination);
+    }
+    OneCombination.clear();
+  }
+  return Combinations;
+}
+
+
+
+inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Instruction *Instr){
+	if(!isa<Value>(Instr)){
+		return -1;
+	}	
+	Value *V = dyn_cast<Value>(Instr);
+	KnownBits Known = computeKnownBits(V, 0, Instr);
+	if(Known.isUnknown()){
+    return RegisteBitWidth;     // Assume that the data is equal to the register width
+  }
+  return Known.getBitWidth();	 
+}
 
 // check IsRedudant uses fillTypeWidth 
 // Return all the solution based on binop rules op1 x op2 -> W
@@ -754,11 +803,11 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
 	Value *V0 = Binop->getOperand(0);
   Value *V1 = Binop->getOperand(1);
 	if(!isa<Instruction>(V0) || !isa<ConstantInt>(V0)){
-		dbgs() << "Error in binop not a constant or something" << '\n';
+		dbgs() << "Error in binop operands not a constant or Instr" << '\n';
 		return Sols;	
 	}
 	if(!isa<Instruction>(V1) || !isa<ConstantInt>(V1)){
-		dbgs() << "Error in binop not a constant or something" << '\n';
+		dbgs() << "Error in binop operands not a constant or Inst" << '\n';
 		return Sols;
 	}
   
@@ -769,27 +818,22 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
                                               AvailableSolutions[N1];
   
-	if(!isa<Value>(Binop)){
-		return Sols;
-	}	
-	auto VBinop = dyn_cast<Value>(Binop) 
   unsigned Opcode = Node->getOpcode();
 	unsigned int addWidth = getScalarsize(Instr->getType());
-	KnownBits Known = computeKnownBits(VBinop, 0, Binop);
-	BinopFillTypeWidth = Known.getBitWidth();	
-	assert(addWidth > Known.getBitWidth() && "Error FillType cannot be bigger than BinopWidth" ); 
+  unsigned BinopFillTypeWidth = getKnownFillTypeWidth(Instr);
+	assert(BinopFillTypeWidth > Known.getBitWidth() && 
+      "Error FillType cannot be bigger than BinopWidth" ); 
   WideningIntegerSolutionInfo *defaultSol = new WIA_BINOP(Opcode, 
 			ExtensionChoice, 
 			/*FillTypeWidth*/ BinopFillTypeWidth, /* OldWidth*/ addwidth , 
-			addWidth , /* Cost */ 0, Node); 
+			addWidth/*NewWidth*/ , /* Cost */ 0, Node); 
   AvailableSolutions[Node].push_back(defaultSol);
 
-  LLVM_DEBUG(dbgs() << "Operand 0 is --> " << OpcodesToStr[N0->getOpcode()]<< "\n");
-  LLVM_DEBUG(dbgs() << "Operand 1 is --> " << OpcodesToStr[N1->getOpcode()]<< "\n");
+  LLVM_DEBUG(dbgs() << "Operand 0 is --> " << OpcodesToStr[V0->getOpcode()]<< "\n");
+  LLVM_DEBUG(dbgs() << "Operand 1 is --> " << OpcodesToStr[V1->getOpcode()]<< "\n");
   LLVM_DEBUG(dbgs() << "Operand 0 Solutions Size is --> " << LeftSols.size() << "\n");
   LLVM_DEBUG(dbgs() << "Operand 1 Solutions Size is --> " << RightSols.size() << "\n");
-  FillTypeSet OperandFillTypes = getOperandFillTypes(Node);
-  LLVMContext &Ctx = *DAG.getContext();
+  FillTypeSet OperandFillTypes = getOperandFillTypes(Binop);
   // A function that combines solutions from operands left and right
   for (WideningIntegerSolutionInfo *leftSolution : LeftSols){
     for(WideningIntegerSolutionInfo *rightSolution : RightSols){
@@ -1138,7 +1182,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitEXTLO(
       }
       unsigned char LeftSolWidth = LeftSol->getUpdatedWidth();
       for(int IntegerSize : IntegerSizes){
-        EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+        EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize); 
         if(IntegerSize <= LeftSolWidth && 
            TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT )){ 
           continue;
