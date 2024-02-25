@@ -187,11 +187,6 @@ void WideningIntegerArithmetic::printInstrSols(SolutionSet Sols,
 	LLVM_DEBUG(dbgs() << "=======================================================" << "\n");
 }
 
-inline unsigned int WideningIntegerArithmetic::getScalarSize(const Type *Typ) 
-	const {
-	EVT VT = TLI.getValueType(DL, Typ);
-  return VT.getScalarSizeInBits(); // TODO check
-}
 
 inline unsigned WideningIntegerArithmetic::getExtensionChoice(
 		enum IntegerFillType ExtChoice){
@@ -740,7 +735,7 @@ WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
 } 
 
 
-WideningIntegerArithmetic::SolutionSet
+std::vector<WideningIntegerArithmetic::SolutionSet>
 WideningIntegerArithmetic::getLegalSolutions(Instruction *Instr){
 
   SmallVector<Use *, 4> IUsers;
@@ -756,10 +751,10 @@ WideningIntegerArithmetic::getLegalSolutions(Instruction *Instr){
     IUsers.push_back(IUser);
   }
   Instruction *User = Users[0];
+  SmallVector<Instruction *, 3> Users_without = Users;
+  auto UserPos = std::find(Users.begin(), Users.end(), User);
+  Users_without.erase(UserPos);
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]){
-    SmallVector<Instruction *, 3> Users_without = Users;
-    auto UserPos = std::find(Users.begin(), Users.end(), User);
-    Users_without.erase(UserPos);
     SolutionSet OneCombination.push_back(Sol);
     bool all_matching = true;
     for(Instruction *IUser1 : Users_without){
@@ -788,7 +783,12 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Instruction *I
 	Value *V = dyn_cast<Value>(Instr);
 	KnownBits Known = computeKnownBits(V, 0, Instr);
 	if(Known.isUnknown()){
-    return RegisteBitWidth;     // Assume that the data is equal to the register width
+    // Assume that the data is equal to the instruction width
+    // We must guarantee that the Instr does not overflow
+    // otherwise this is wrong. 
+    // The overflow checks is done for all the Operators that
+    // can overflow such as add, sub.
+    return Instr->getType()->getScalarSizeInBits(); 
   }
   return Known.getBitWidth();	 
 }
@@ -814,19 +814,19 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
   bool AddedSol = false; 
   // get All the available solutions from nodes 
   SmallVector<WideningIntegerSolutionInfo*> LeftSols = 
-                                              AvailableSolutions[N0];
+                                              AvailableSolutions[V0];
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
-                                              AvailableSolutions[N1];
+                                              AvailableSolutions[V1];
   
-  unsigned Opcode = Node->getOpcode();
-	unsigned int addWidth = getScalarsize(Instr->getType());
+  unsigned Opcode = Instr->getOpcode();
+	unsigned int InstrWidth = Instr->getType()->getScalarSizeInBits();
   unsigned BinopFillTypeWidth = getKnownFillTypeWidth(Instr);
 	assert(BinopFillTypeWidth > Known.getBitWidth() && 
       "Error FillType cannot be bigger than BinopWidth" ); 
   WideningIntegerSolutionInfo *defaultSol = new WIA_BINOP(Opcode, 
 			ExtensionChoice, 
-			/*FillTypeWidth*/ BinopFillTypeWidth, /* OldWidth*/ addwidth , 
-			addWidth/*NewWidth*/ , /* Cost */ 0, Node); 
+			/*FillTypeWidth*/ BinopFillTypeWidth, /* OldWidth*/ InstrWidth , 
+			InstrWidth/*NewWidth*/ , /* Cost */ 0, Node); 
   AvailableSolutions[Node].push_back(defaultSol);
 
   LLVM_DEBUG(dbgs() << "Operand 0 is --> " << OpcodesToStr[V0->getOpcode()]<< "\n");
@@ -860,7 +860,7 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
       }
       //dbgs() << "The widths are the same and we continue--> " << w1 << "\n"; 
       EVT NewVT = EVT::getIntegerVT(Ctx, w1); 
-      if(!TLI.isOperationLegal(Opcode, NewVT)){
+      if(!TLI.isOperationLegal(TLI.InstructionOpcodeToISD(Opcode), NewVT)){
 				LLVM_DEBUG(dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n");
         continue;
 			}
@@ -892,36 +892,33 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
 }
 
 std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitFILL(
-                          SDNode *Node){
+                          Instruction *Instr){
   
-  EVT VT = Node->getValueType(0);
-  unsigned VTBits = VT.getScalarSizeInBits();
+  unsigned Width = Instr->getType()->getScalarSizeInBits();
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
-  unsigned char Width = getTargetWidth() - VTBits;  
-  unsigned char FillTypeWidth = VTBits; 
+  unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
   
-  SolutionSet Sols = AvailableSolutions[Node];
+  SolutionSet Sols = AvailableSolutions[Instr];
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
-    if(Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ||
+    if(Sol->getOpcode() == Instruction::SExt ||
        llvm::ISD::isExtOpcode(Sol->getOpcode()) ||
-         Sol->getOpcode() == ISD::TRUNCATE ) 
-      continue;    // TODO CHECK is FILL a ISD::SIGN_EXTEND_INREG ??
-    // WIA_FILL extends the least significant *Width* bits of SDNode
+         Sol->getOpcode() == Instruction::Trunc ) 
+     continue;    //FILL is a ISD::SIGN_EXTEND_INREG
+    // WIA_FILL extends the least significant *Width* bits of Instr
     // to targetWidth
     for(auto IntegerSize : IntegerSizes ){
-      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+      EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize);
+      // TODO should I add isTypeLegal for the NewVT
+      // meaning is TLi.isOperationLegal enough for the NewVT? 
       if(IntegerSize < FillTypeWidth || IntegerSize < (int)Sol->getWidth() ||
-         Sol->getOpcode() == ISD::TRUNCATE || 
+         InstructionOpcodeToISD(Sol->getOpcode()) == ISD::TRUNCATE || 
          !TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)){
         continue;
-			}
-      // get first legal IntegerSize.
-      // in the inner loop
-      // Solution with the biggest FillTypeWidth wins
+			} 
       WideningIntegerSolutionInfo *Fill = new WIA_FILL(
         ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
-        getTargetWidth() , Sol->getCost() + 1, Node ); 
+        IntegerSize , Sol->getCost() + 1, Instr ); 
       Fill->addOperand(Sol);
       Solutions.push_front(Fill);  
     }
@@ -933,47 +930,48 @@ inline Type* WideningIntegerArithmetic::getTypeFromInteger(
                                 unsigned char Integer){
   Type* Ty;
   switch(Integer){
-    case 8: Ty = Type::getInt8Ty(*DAG.getContext()); break;
-    case 16: Ty = Type::getInt16Ty(*DAG.getContext()); break;
-    case 32: Ty = Type::getInt32Ty(*DAG.getContext()); break;
-    case 64: Ty = Type::getInt64Ty(*DAG.getContext()); break; 
+    case 8: Ty = Type::getInt8Ty(Ctx); break;
+    case 16: Ty = Type::getInt16Ty(Ctx); break;
+    case 32: Ty = Type::getInt32Ty(Ctx); break;
+    case 64: Ty = Type::getInt64Ty(Ctx); break; 
   }
   return Ty; 
 }
 
-inline unsigned WideningIntegerArithmetic::getExtCost(SDNode *Node,
+inline unsigned WideningIntegerArithmetic::getExtCost(Instrution *Instr,
          WideningIntegerSolutionInfo* Sol, unsigned short IntegerSize){
   unsigned cost = Sol->getCost();
-  Type* Ty1 = Node->getValueType(0).getTypeForEVT(*DAG.getContext());
+  Type* Ty1 = Instr->getType();;
   Type* Ty2 = getTypeFromInteger((int)IntegerSize);
-  if(!TLI.isZExtFree(Ty1, Ty2) || !TLI.isSExtFree(Ty1, Ty2)){
+  if(!TLI->isZExtFree(Ty1, Ty2) || !TLI->isSExtFree(Ty1, Ty2)){
     ++cost;
   }
   return cost;
 }
   
 std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
-                          SDNode *Node){
+                          Instruction *Instr){
  
   // TODO how to check for Type S? depends on target ? or on this operand
   // if(!hasTypeS(Sol->getFillType())
   //  return NULL; 
   
-  unsigned char FillTypeWidth = getScalarSize(Node->getOperand(0).getValueType()); 
-  unsigned char Width = getTargetWidth() - FillTypeWidth; 
+  unsigned Width = Instr->getType()->getScalarSizeInBits();
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
-  SolutionSet Sols = AvailableSolutions[Node];
+  unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
+  SolutionSet Sols = AvailableSolutions[Instr];
   LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(WideningIntegerSolutionInfo *Sol : Sols){
     LLVM_DEBUG(dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n');
+    unsigned IsdOpc = InstructionOpcodeToISD(Sol->getOpcode);
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
-       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG || 
-       Sol->getOpcode() == ISD::TRUNCATE ) 
+       IsdOpc == ISD::SIGN_EXTEND_INREG || 
+       IsdOpc == ISD::TRUNCATE ) 
       continue;
     LLVM_DEBUG(dbgs() << "Passed first if --> " << Sol << '\n');
     for(int IntegerSize : IntegerSizes){
-      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+      EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize); 
       if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||
          !TLI.isOperationLegal(ExtensionOpc, NewVT)){
         continue;
@@ -983,7 +981,7 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
       // Results to a widened expr based on ExtensionOpc
       WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
         ExtensionOpc, ExtensionChoice, FillTypeWidth, Width,
-        IntegerSize, cost , Node);
+        IntegerSize, cost , Instr);
       Widen->addOperand(Sol); 
       Solutions.push_front(Widen);  
     } 
@@ -993,34 +991,36 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN(
     
 
 std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GARBAGE(
-      SDNode *Node){
+      Instruction *Instr){
 
-  unsigned char FillTypeWidth = getScalarSize(Node->getOperand(0).getValueType());  
+  unsigned Width = Instr->getType()->getScalarSizeInBits();
   unsigned ExtensionOpc = ISD::ANY_EXTEND;  // Results to a garbage widened
-  auto Sols = AvailableSolutions[Node];
+  unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
+  auto Sols = AvailableSolutions[Instr];
   LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   // TODO add isExtFree and modify cost accordingly 
   for(WideningIntegerSolutionInfo *Sol : Sols){
     LLVM_DEBUG(dbgs() << "Inside GarbageWiden Iterating Sol --> " << Sol << '\n');
-    if(llvm::ISD::isExtOpcode(Sol->getOpcode() || 
-       Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ) ||
-       Sol->getOpcode() == ISD::TRUNCATE ) 
+    unsigned IsdOpc = InstructionOpcodeToISD(Sol->getOpcode);
+    if(llvm::ISD::isExtOpcode(IsdOpc) || 
+       // TODO how to check for this? Is it needed also ? Sol->getOpcode() == ISD::SIGN_EXTEND_INREG ) ||
+       IsdOpc == Instruction::Truncate ) 
       continue;
     LLVM_DEBUG(dbgs() << "Passed first if --> " << Sol << '\n');
     for(int IntegerSize : IntegerSizes){
-      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+      EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize); 
       if(IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||  
-         !TLI.isOperationLegal(ISD::ANY_EXTEND, NewVT)){
+         !TLI->isOperationLegal(ISD::ANY_EXTEND, NewVT)){
         continue;
 			}
-      
-      unsigned cost = getExtCost(Node, Sol, IntegerSize); 
+      // TODO check do we need isTypeLegal? 
+      unsigned cost = getExtCost(Instr, Sol, IntegerSize); 
       LLVM_DEBUG(dbgs() << "Adding GarbageWiden --> " << IntegerSize << '\n');
      
       WideningIntegerSolutionInfo *GarbageWiden = new WIA_WIDEN(
         ExtensionOpc, ANYTHING, FillTypeWidth,  Sol->getWidth(), IntegerSize,
-        cost , Node);
+        cost , Instr);
       GarbageWiden->addOperand(Sol);
       Solutions.push_front(GarbageWiden);    
     }
@@ -1028,27 +1028,29 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitWIDEN_GA
 	return Solutions;	
 }
     
-std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(SDNode *Node){
+std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(
+    Instruction *Instr){
   
  
-  unsigned char Width = getScalarSize(Node->getValueType(0));  
-  unsigned char FillTypeWidth = Width;
-
+  unsigned Width = Instr->getType()->getScalarSizeInBits();
+  unsigned ExtensionOpc = ISD::ANY_EXTEND;  // Results to a garbage widened
+  unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
   // TODO check isTruncateFree on some targets and widths.
   // Not sure the kinds of truncate of the Target will determine it.
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
  
-  auto Sols = AvailableSolutions[Node];
+  auto Sols = AvailableSolutions[Instr];
   LLVM_DEBUG(dbgs() << "SolutionsSize is --> " << Sols.size() << '\n');
 	std::list<WideningIntegerSolutionInfo*> Solutions;
   for(auto Sol : Sols){ 
     LLVM_DEBUG(dbgs() << "Inside visitNarrow " << '\n');
+    unsigned IsdOpc = InstructionOpcodeToISD(Sol->getOpcode);
     if(llvm::ISD::isExtOpcode(Sol->getOpcode()) || 
-        Sol->getOpcode() == ISD::SIGN_EXTEND_INREG  ||
-        Sol->getOpcode() == ISD::TRUNCATE ) 
+        IsdOpc == ISD::SIGN_EXTEND_INREG  ||
+        IsdOpc == ISD::TRUNCATE ) 
       continue;
     for(int IntegerSize : IntegerSizes){
-      EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize);
+      EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize);
       if(!TLI.isOperationLegal(ISD::TRUNCATE, NewVT) ||
 				 IntegerSize < FillTypeWidth || IntegerSize >= Sol->getWidth()) {
 				continue;
@@ -1059,11 +1061,11 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
       Type* Ty1 = Node->getValueType(0).getTypeForEVT(*DAG.getContext());
       Type* Ty2;
       switch(IntegerSize){
-        case 8: Ty2 = Type::getInt8Ty(*DAG.getContext()); break;
-        case 16: Ty2 = Type::getInt16Ty(*DAG.getContext()); break;
-        case 32: Ty2 = Type::getInt32Ty(*DAG.getContext()); break;
+        case 8: Ty2 = Type::getInt8Ty(Ctx); break;
+        case 16: Ty2 = Type::getInt16Ty(Ctx); break;
+        case 32: Ty2 = Type::getInt32Ty(Ctx); break;
       }
-      if(!TLI.isTruncateFree(Ty1, Ty2))
+      if(!TLI->isTruncateFree(Ty1, Ty2))
         cost = cost + 1;
       LLVM_DEBUG(dbgs() << "Adding new Wia Narrow" << IntegerSize <<  '\n');
       WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(ExtensionOpc,
@@ -1077,12 +1079,22 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(S
 }
     
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
-                          SDNode *Node){
+                          Instruction *Instr){
+  unsigned Width = Instr->getType()->getScalarSizeInBits();
+  unsigned ExtensionOpc = ISD::ANY_EXTEND;  // Results to a garbage widened
+  unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
 
-  SDValue N0 = Node->getOperand(0);
-  unsigned char ExtendedWidth = getScalarSize(Node->getValueType(0));
-  unsigned char OldWidth = getScalarSize(N0.getValueType());  
-  unsigned Opc = N0->getOpcode();
+  Value *N0 = Instr->getOperand(0);
+  unsigned char ExtendedWidth = Instr->getType()->getScalarSizeInBits();
+  unsigned char OldWidth = N0->getType()->getScalarSizeInBits();  
+  unsigned Opc;
+  if(auto *Iop = dyn_cast<Instruction>(N0)){
+    Opc = N0->getOpcode();
+  }else if(Iop = dyn_cast<ConstantInt>(N0)){
+    Opc = 100; //  Indicates a ConstantIn
+  }else{
+    Opc = 333; // Indicates unknown opc 
+  }
   auto ExprSolutions = AvailableSolutions[N0.getNode()];
   SolutionSet Sols;
   switch(Node->getOpcode()){
@@ -1105,7 +1117,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(Solution->getOpcode(),
       ExtensionChoice, FillTypeWidth, ExtendedWidth /*OldWidth*/, 
-      OldWidth/*NewWidth*/, Solution->getCost(), Node);
+      OldWidth/*NewWidth*/, Solution->getCost(), Instr);
     
     Expr->setOperands(Solution->getOperands());
     Sols.push_back(Expr); 
