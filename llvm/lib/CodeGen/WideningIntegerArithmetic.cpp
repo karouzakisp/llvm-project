@@ -1051,7 +1051,7 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitNARROW(
       continue;
     for(int IntegerSize : IntegerSizes){
       EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize);
-      if(!TLI.isOperationLegal(ISD::TRUNCATE, NewVT) ||
+      if(!TLI->isOperationLegal(ISD::TRUNCATE, NewVT) ||
 				 IntegerSize < FillTypeWidth || IntegerSize >= Sol->getWidth()) {
 				continue;
 			}
@@ -1087,15 +1087,15 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   Value *N0 = Instr->getOperand(0);
   unsigned char ExtendedWidth = Instr->getType()->getScalarSizeInBits();
   unsigned char OldWidth = N0->getType()->getScalarSizeInBits();  
-  unsigned Opc;
+  SolutionSet ExprSolutions = AvailableSolutions[N0];
+  int Opc;
   if(auto *Iop = dyn_cast<Instruction>(N0)){
     Opc = N0->getOpcode();
   }else if(Iop = dyn_cast<ConstantInt>(N0)){
-    Opc = 100; //  Indicates a ConstantIn
+    Opc = -1; //  Indicates a ConstantIn
   }else{
-    Opc = 333; // Indicates unknown opc 
+    Opc = -2; // Indicates unknown opc 
   }
-  auto ExprSolutions = AvailableSolutions[N0.getNode()];
   SolutionSet Sols;
   switch(Node->getOpcode()){
     case ISD::SIGN_EXTEND: ++NumSExtsDropped; break;
@@ -1106,11 +1106,13 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   }
   LLVM_DEBUG(dbgs() << "Trying to drop extension in Solutions" << '\n');
   LLVM_DEBUG(dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n');
-  LLVM_DEBUG(dbgs() << "Opc of Node->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n');
-  LLVM_DEBUG(dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n');
+  if(Opc >= 0){
+    LLVM_DEBUG(dbgs() << "Opc of Instr->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n');
+  }
+  LLVM_DEBUG(dbgs() << "Opc of Instr is " << Instr->getOpcode() << "Opc of Instr str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
   LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
   LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
-  LLVM_DEBUG(dbgs() << "Opc of Node is " << Node->getOpcode() << "Opc of Node str is " << OpcodesToStr[Node->getOpcode()] << '\n');
+  LLVM_DEBUG(dbgs() << "Opc of Node is " << Instr->getOpcode() << "Opc of Node str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
     LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n'); 
@@ -1128,25 +1130,25 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
 
   
 WideningIntegerArithmetic::SolutionSet 
-  WideningIntegerArithmetic::visitDROP_TRUNC(
-                          SDNode *Node){
+  WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr){
   SolutionSet Sols;
-  assert(Node->getOpcode() == llvm::ISD::TRUNCATE && 
+
+  assert(Instr->getOpcode() == Instruction:Truncate && 
                               "Not an extension to drop here");  
   // TRUNCATE has only 1 operand
-  SDValue N0 = Node->getOperand(0);
+  Value N0 = Instr->getOperand(0);
   SmallVector<WideningIntegerSolutionInfo*> ExprSolutions = 
-                                              AvailableSolutions[N0.getNode()];
+                                              AvailableSolutions[N0];
   
   if(ExprSolutions.size() == 0 ){
-    LLVM_DEBUG(dbgs() << "Child of Truncate with opc " << N0.getNode()->getOpcode());
+    LLVM_DEBUG(dbgs() << "Child of Truncate with opc " << N0->getOpcode());
     LLVM_DEBUG(dbgs() << " has no Solutions\n");
     return Sols; 
   }
   unsigned Opc = N0->getOpcode();
 	// NewWidth is the width of the value before the truncation
-  unsigned char NewWidth = getScalarSize(N0.getValueType()); 
-  unsigned char TruncatedWidth = getScalarSize(Node->getValueType(0)); 
+  unsigned char NewWidth = N0.getType()->getScalarSizeInBits(); 
+  unsigned char TruncatedWidth = Instr->getType->getScalarSizeInBits(); 
   // We simply drop the truncation and we will later see if it's needed.
   NumTruncatesDropped++; 
   for(auto Sol : ExprSolutions){
@@ -1172,12 +1174,11 @@ WideningIntegerArithmetic::SolutionSet
 
 
 WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitEXTLO(
-                          SDNode *N){
+                          Instruction *Instr){
   SolutionSet CalcSols;
-  SDValue N0 = N->getOperand(0);
-  SDValue N1 = N->getOperand(1);
-  EVT VT = N->getValueType(0); // TYPE OF the result
-  unsigned VTBits = getScalarSize(VT);
+  SDValue N0 = Instr->getOperand(0);
+  SDValue N1 = Instr->getOperand(1);
+  unsigned VTBits = N->getType()->getScalarSizeInBits(); 
   SolutionSet LeftSols = AvailableSolutions[N0.getNode()];
   SolutionSet RightSols = AvailableSolutions[N1.getNode()];
   
@@ -1196,16 +1197,14 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitEXTLO(
       for(int IntegerSize : IntegerSizes){
         EVT NewVT = EVT::getIntegerVT(Ctx, IntegerSize); 
         if(IntegerSize <= LeftSolWidth && 
-           TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT )){ 
+           TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT )){ 
           continue;
         }
         unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
         // add all integers that are bigger to the solutions
         WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(ExtensionOpc,
           ExtensionChoice, LeftSol->getFillTypeWidth(), VTBits, IntegerSize, cost, N);
-        Expr->addOperand(LeftSol); // TODO CHECK a SIGN_EXTEND_INREG has 2 operands??
-        Expr->addOperand(RightSol);  // TODO same as above
-        
+        Expr->addOperand(LeftSol);         
         AvailableSolutions[N].push_back(Expr);
       } 
     } 
