@@ -151,6 +151,9 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
 
+		// Finds all the combinations of the legal 
+		// solutions of all the Users of Instr 
+		std::vector<SolutionSet> getLegalSolutions(Instruction *Instr);
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
@@ -660,8 +663,8 @@ void WideningIntegerArithmetic::visitCONSTANT(ConstantInt *CI){
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::visitSTORE(Instruction *Instr){
   SolutionSet Sols;
-  Value *VI = dyn_cast<Value>(Instr)
-  unsigned char N0Bits = getScalarSize(Instr->getType());
+  Value *VI = dyn_cast<Value>(Instr);
+  unsigned char N0Bits = Instr->getType()->getScalarSizeInBits();
   auto N0Sols = AvailableSolutions[Instr->getOperand(0)];
   for(WideningIntegerSolutionInfo *Sol : N0Sols ){
     auto StoreSol = new WIA_STORE(Instr->getOpcode(), Sol->getFillType(),
@@ -682,7 +685,7 @@ WideningIntegerArithmetic::visitLOAD(Instruction *Instr){
 	// TODO check
   IntegerFillType FillType = IntegerFillType::UNDEFINED; 
   
-  unsigned int Width = Instr->geteType()->getScalarSizeInBits();
+  unsigned int Width = Instr->getType()->getScalarSizeInBits();
   int FillTypeWidth = Width; 
   auto WIALoad = new WIA_LOAD(Instr->getOpcode(), FillType, FillTypeWidth,
                 Width, FillTypeWidth, 0, dyn_cast<Value>(Instr));
@@ -712,9 +715,7 @@ inline bool
 WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
 	
   unsigned Opcode;
-  SDValue N0 = Node->getOperand(0);
-  SDValue N1 = Node->getOperand(1);
-  Opcode = Node->getOpcode();
+  Opcode = Instr->getOpcode();
   switch(Opcode){
 		case Instruction::Add:
 		case Instruction::SDiv:
@@ -725,6 +726,7 @@ WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
 		default:
       return false; 
   }
+	return false;
 } 
 
 
@@ -737,30 +739,30 @@ bool isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
 std::vector<WideningIntegerArithmetic::SolutionSet>
 WideningIntegerArithmetic::getLegalSolutions(Instruction *Instr){
 
-  SmallVector<Use *, 4> IUsers;
+  SmallVector<Value *, 4> VUsers;
   SmallVector<SolutionSet, 4> UsersSolution;
   std::vector<SolutionSet> Combinations;
-  if(Instruction->uses().size() == 0 ){
+  if(Instr->getNumUses() == 0 ){
     return Combinations;
   }
 
   for(auto &Use : Instr->uses()){
-    Instruction *IUser = cast<Instruction>(Use.getUser());
-    UsersSolution.push_back(AvailableSolutions[IUser]);
-    IUsers.push_back(IUser);
+    Value *VUser1 = Use.get();
+    UsersSolution.push_back(AvailableSolutions[VUser1]);
+    VUsers.push_back(VUser1);
   }
-  Instruction *User = Users[0];
-  SmallVector<Instruction *, 3> Users_without = Users;
-  auto UserPos = std::find(Users.begin(), Users.end(), User);
+  Value *VUser = VUsers[0];
+  SmallVector<Value *, 4> Users_without = VUsers;
+  auto UserPos = std::find(VUsers.begin(), VUsers.end(), VUser);
   Users_without.erase(UserPos);
-  for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]){
+  for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]){
     SolutionSet OneCombination; 
 		OneCombination.push_back(Sol);
     bool all_matching = true;
-    for(Instruction *IUser1 : Users_without){
-      for(WideningIntegerSolutionInfo *Sol1 : AvailableSolutions[IUser1]){
-        if(isLegalAndMatching(Sol, Sol1)){
-          OneCombination.push_back(Sol1);
+    for(Value *VUser2 : Users_without){
+      for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]){
+        if(isLegalAndMatching(Sol, Sol2)){
+          OneCombination.push_back(Sol2);
         }else{
           all_matching = false;
         }
@@ -782,7 +784,7 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
 		return -1;
 	}	
 	Value *V = dyn_cast<Value>(Instr);
-	KnownBits Known = computeKnownBits(V, 0, Instr);
+	KnownBits Known = computeKnownBits(V, 0, DL);
 	if(Known.isUnknown()){
     // Assume that the data is equal to the instruction width
     // We must guarantee that the Instr does not overflow
