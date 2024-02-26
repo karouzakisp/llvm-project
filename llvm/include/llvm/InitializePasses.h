@@ -416,6 +416,7 @@ void initializeVirtRegRewriterPass(PassRegistry&);
 void initializeWarnMissedTransformationsLegacyPass(PassRegistry &);
 void initializeWasmEHPreparePass(PassRegistry&);
 void initializeWinEHPreparePass(PassRegistry&);
+void initializeWideningIntegerArithmeticPass(PassRegistry&);
 void initializeWriteBitcodePassPass(PassRegistry&);
 void initializeXRayInstrumentationPass(PassRegistry&);
 

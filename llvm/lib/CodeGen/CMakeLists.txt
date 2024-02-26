@@ -239,6 +239,7 @@ add_llvm_component_library(LLVMCodeGen
   VirtRegMap.cpp
   WasmEHPrepare.cpp
   WinEHPrepare.cpp
+	WideningIntegerArithmetic.cpp
   XRayInstrumentation.cpp
   ${GeneratedMLSources}
 
