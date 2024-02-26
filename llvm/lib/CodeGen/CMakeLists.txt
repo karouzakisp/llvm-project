@@ -246,6 +246,7 @@ add_llvm_component_library(LLVMCodeGen
   WasmEHPrepare.cpp
   WindowScheduler.cpp
   WinEHPrepare.cpp
+	WideningIntegerArithmetic.cpp
   XRayInstrumentation.cpp
   ${GeneratedMLSources}
 
