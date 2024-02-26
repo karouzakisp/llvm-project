@@ -158,11 +158,11 @@ public:
   WideningIntegerSolutionInfo(WIAKind Kind_): Kind(Kind_) {} 
   WideningIntegerSolutionInfo(unsigned char Opcode_, IntegerFillType FillType_,
   unsigned short FillTypeWidth_, unsigned short Width_, unsigned short UpdatedWidth_, 
-    short int Cost_, WIAKind Kind_, Value *V): 
+    short int Cost_, WIAKind Kind_, Value *V_): 
   Opcode(Opcode_),  FillType(FillType_), 
   FillTypeWidth(FillTypeWidth_), Width(Width_),
   UpdatedWidth(UpdatedWidth_),
-  Cost(Cost_), Instr(V_), Kind(Kind_) {}
+  Cost(Cost_), V(V_), Kind(Kind_) {}
  
   WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &other)
   : Opcode(other.getOpcode()), FillType(other.getFillType()),
