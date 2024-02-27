@@ -120,7 +120,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     FillTypeSet getOperandFillTypes(Instruction *Instr);
   
     void setFillType();  
-    bool isSolved(Value *V);
+    inline bool isSolved(Value *V);
 
     bool addNonRedudant(SolutionSet &Solutions, 
                         WideningIntegerSolutionInfo* GeneratedSol);
@@ -149,6 +149,8 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitSUBSUME_INDEX(Instruction *Instr);
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
+		std::vector<WideningIntegerArithmetic::SolutionSet>
+			visitPHI(Instruction *Instr);
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
@@ -312,6 +314,9 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
     //dbgs() << " and Visiting Truncation ..\n"; 
     return visitDROP_TRUNC(Instr);
   }
+	else if(IsPHI(Opcode)){
+		visitPHI(Instr); // TODO FIXME return type? move out? 
+	}
   else{
     dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
     LLVM_DEBUG(dbgs() << "Opcode str is" << OpcodesToStr[Opcode] << "\n");
@@ -795,7 +800,56 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
   return Known.getBitWidth();	 
 }
 
-// check IsRedudant uses fillTypeWidth 
+std::vector<WideningIntegerArithmetic::SolutionSet>
+WideningIntegerArithmetic::visitPHI(Instruction *Instr){
+	// we know that Instr is PHINode from isPHI method so we can cast it.
+	auto *PhiInst = dyn_cast<PHINode>(Instr);
+	int NumIncValues = PhiInst->getNumIncomingValues();
+  std::vector<SolutionSet> Combinations;
+	SmallVector<Value*, 4> IncomingValues;
+	
+	for(int i = 0; i < NumIncValues; i++){
+		Value *V = PhiInst->getIncomingValue(i);
+		IncomingValues.push_back(V);
+		if(!isSolved(V)){
+			continue;
+		}
+		if(auto *VI = dyn_cast<Instruction>(V)){
+			visitInstruction(VI);
+		}
+		if(auto *CI = dyn_cast<ConstantInt>(V)){
+			visitCONSTANT(CI);
+		}
+	}
+  Value *SelectedValue = IncomingValues[0];
+  SmallVector<Value *, 4> ValuesWithout = IncomingValues;
+  auto ValuePos = std::find(IncomingValues.begin(), IncomingValues.end(), 
+			SelectedValue);
+  ValuesWithout.erase(ValuePos);
+  for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
+    SolutionSet OneCombination; 
+		OneCombination.push_back(Sol);
+    bool all_matching = true;
+    for(Value *Val2 : ValuesWithout){
+      for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
+        if(isLegalAndMatching(Sol, Sol2)){
+          OneCombination.push_back(Sol2);
+        }else{
+          all_matching = false;
+        }
+      }
+    }
+    if(all_matching){
+      Combinations.push_back(OneCombination);
+    }
+    OneCombination.clear();
+  }
+  return Combinations;
+		
+}
+
+	
+	// check IsRedudant uses fillTypeWidth 
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
 WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
@@ -814,18 +868,21 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
 		return Sols;
 	}
 	if(Binop->getOpcode() == Instruction::Shl){
-    if(auto *I = dyn_cast<Instruction>(V0) && auto *CI = dyn_cast<ConstantInt>(V1)){
-      unsigned LeftShiftC = CI->getZExtValue(); 
-      if(I->getOpcode() == Instruction::AShr && auto C2 = dyn_cast<ConstantInt>(V1)){
-        unsigned ARightShiftC = C2->getZExtValue();
-        if(ARightShiftC == LeftShiftC){
-          return visitEXTLO(Binop);
-        }
-      } 
-    } 
-  }
-		case  Instruction::AShr:
-		case  Instruction::Shl:
+    if(auto *I = dyn_cast<Instruction>(V0)){
+		 	if(auto *CI = dyn_cast<ConstantInt>(V1)){
+				unsigned LeftShiftC = CI->getZExtValue(); 
+				if(I->getOpcode() == Instruction::AShr ){
+					auto ShlV1 = dyn_cast<Instruction>(I);
+					if(auto *C2 = dyn_cast<ConstantInt>(ShlV1)){
+						unsigned ARightShiftC = C2->getZExtValue();
+						if(ARightShiftC == LeftShiftC){
+							return visitEXTLO(Binop);
+						}
+					}
+				} 
+			} 
+		}
+	}
   
   bool AddedSol = false; 
   // get All the available solutions from the operands // 
@@ -1281,6 +1338,14 @@ WideningIntegerArithmetic::createWidth(unsigned char op1,
         std::move(op1), std::move(op2), dst);
 }
 
+
+inline bool WideningIntegerArithmetic::isSolved(Value *V){
+	auto isVisited = SolvedInstructions.find(V);
+  if(isVisited != SolvedInstructions.end())
+    return true;
+  
+  return false;
+}
 
 void WideningIntegerArithmetic::initOperatorsFillTypes(){
 
