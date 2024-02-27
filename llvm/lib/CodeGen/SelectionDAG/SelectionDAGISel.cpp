@@ -932,7 +932,6 @@ void SelectionDAGISel::CodeGenAndEmitDAG() {
   {
     NamedRegionTimer T("combine1", "DAG Combining 1", GroupName,
                        GroupDescription, TimePassesIsEnabled);
-    CurDAG->OptExtensions(OptLevel);
     CurDAG->Combine(BeforeLegalizeTypes, AA, OptLevel);
   }
 
