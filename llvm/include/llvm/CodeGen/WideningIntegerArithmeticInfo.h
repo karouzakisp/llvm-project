@@ -9,6 +9,7 @@
 namespace llvm {
 
 #define CONSTANT_INT_OPC 67
+#define FillInstOpc 68
 
 class Value;
 
@@ -80,7 +81,8 @@ class Value;
 		"ShuffleVector",
 		"ExtractValue",
 		"InsertValue",
-		"ConstantInt"
+		"ConstantInt",
+		"FillInst"
 	};
 
 
