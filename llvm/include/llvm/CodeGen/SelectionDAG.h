@@ -595,10 +595,6 @@ public:
   /// types that are illegal on the target.
   void Combine(CombineLevel Level, AAResults *AA, CodeGenOptLevel OptLevel);
 
-  // This iterates over all the nodes in the SelectionDAG after each Combine, and removes
-  // redudant sign and zero extension by doing analysis of the DAG.
-  // Note that floating point Nodes are not supported yet.
-  void OptExtensions(CodeGenOpt::Level OptLevel);
 
   /// This transforms the SelectionDAG into a SelectionDAG that
   /// only uses types natively supported by the target.
