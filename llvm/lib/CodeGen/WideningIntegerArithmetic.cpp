@@ -154,7 +154,11 @@ class WideningIntegerArithmetic : public FunctionPass {
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
-		std::vector<SolutionSet> getAllUsersLegalSolutions(Instruction *Instr);
+		DenseMap<Value *, WideningIntegerSolutionInfo *> 
+			getAllUsersLegalSolutions(Instruction *Instr);
+
+		// iterates all the 
+		bool applyChain(DenseMap<Value *, WideningIntegerSolutionInfo*> );
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
@@ -181,6 +185,8 @@ class WideningIntegerArithmetic : public FunctionPass {
     inline Type* getTypeFromInteger(int Integer);
     inline short int getKnownFillTypeWidth(Instruction *Instr);
 
+		bool inline isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
+																	 WideningIntegerSolutionInfo *Sol2);
     bool mayOverflow(Instruction *Instr);
 };
 } // end anonymous namespace
@@ -366,7 +372,7 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
   SolvedInstructions[VInstr] = true; 
 	counter++;
   if(CalcSolutions.size() > 0){
-    //printNodeSols(CalcSolutions, Node);
+    printInstrSols(CalcSolutions, Instr);
 		if(auto search = AvailableSolutions.find(Instr); search != AvailableSolutions.end()){
       //dbgs() << "ERROR --!!!!!!!!!-===============" << "\n";
 		}else{
@@ -734,22 +740,21 @@ WideningIntegerArithmetic::mayOverflow(Instruction *Instr){
 } 
 
 
-bool inline WideningIntegerSolutionInfo::isLegalAndMatching(
+bool inline WideningIntegerArithmetic::isLegalAndMatching(
 		WideningIntegerSolutionInfo *Sol1, WideningIntegerSolutionInfo *Sol2){
 	return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
-AvailableSolutionsMap
+DenseMap<Value *, WideningIntegerSolutionInfo *>
 WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr){
 
   SmallVector<Value *, 4> VUsers;
   SmallVector<SolutionSet, 4> UsersSolution;
-  AvailableSolutionsMap FinalLegalUsersSolutions;
-	AvailableSolutionsMap Combinations;
+	std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>> Combinations;
+	DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;	
   if(Instr->getNumUses() == 0 ){
-    return FinalLegalUsersSolutions;
+    return BestCombination;
   }
-
   for(auto &Use : Instr->uses()){
     Value *VUser1 = Use.get();
     UsersSolution.push_back(AvailableSolutions[VUser1]);
@@ -760,29 +765,35 @@ WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr){
   auto UserPos = std::find(VUsers.begin(), VUsers.end(), VUser);
   Users_without.erase(UserPos);
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]){
-    AvailableSolutionsMap LegalSolutionsUser; 
     bool all_matching = true;
-    LegalSolutionUsers[VUser].push_back(Sol);
+		DenseMap<Value *, WideningIntegerSolutionInfo *> OneCombination;
+		OneCombination[VUser] = Sol;
     for(Value *VUser2 : Users_without){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]){
         if(isLegalAndMatching(Sol, Sol2)){
-          LegalSolutionUsers[VUser2].push_back(Sol2);
-					Combinations.push_back(
+					OneCombination[VUser2] = Sol2;	
         }else{
           all_matching = false;
         }
       }
     }
     if(all_matching){
-    	for(Value *VU : VUsers){
-				for(WideningIntegerSolutionInfo *UserSol : LegalSolutionUsers[VU]){
-					FinalLegalUsersSolutions[VU].push_back(UserSol);
-				}
-			}	
+			Combinations.push_back(OneCombination);
 		}
-    LegalSolutionUsers.clear();
-  }
-  return Combinations;
+    OneCombination.clear();
+  }	
+	int min_cost = INT_MAX;
+	for(auto ValuesSolsMap : Combinations){
+		int sum = 0;
+  	for(const auto& it : ValuesSolsMap){
+			sum += it.second->getCost();	
+		}
+		if(sum < min_cost){
+			min_cost = sum;
+			BestCombination = ValuesSolsMap;
+		}
+	}	
+	return BestCombination;
 }
 
 
@@ -1206,30 +1217,38 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   return Sols; 
 }
 
-bool applyChain(DenseMap<Value *, WideningIntegerSolutionInfo*> BestCombinations){
-	Value *V = bestSolution->getValue();
+bool WideningIntegerArithmetic::applyChain(
+		DenseMap<Value *, WideningIntegerSolutionInfo*> BestSolsUsersCombination){
 	bool Changed = false;
-	SmallVector<WideningIntegerSolutionInfo *>;
-	SmallVectorImpl<WideningIntegerSolutionInfo * >;    
-	DenseMap<Value* , SolutionSet>;
-	// we do not know how to handle this solution yet.
-	if(bestSolution->getKind == WIAK_UNKNOWN){
-		dbgs() << "Unknown Solution with Opcode " << OpcodesToStr[bestSolution->getOpcode()] << '\n';
-		return Changed;
+	
+	for(auto &Combination : BestSolsUsersCombination){
+		// All users are solved at this point
+		Value *VComb = Combination.first;
+		WideningIntegerSolutionInfo *Sol = Combination.second;
+		if(Sol->getKind() == WIAK_UNKNOWN){
+			dbgs() << "Best solution has Unknown kind..cannot apply it yet, ";
+			if(auto *I = dyn_cast<Instruction>(VComb)){
+				dbgs() << "Opcode is " << I->getOpcode() << '\n';
+			}
+			if(auto *CI = dyn_cast<ConstantInt>(VComb)){
+				dbgs() << "Opcode is Constant" << '\n';
+			}
+			return false;
+		}
 	}
-	SolutionSet *UserSols = FinalLegalUsersSolutions[UserV];
-	for(auto &Combination : BestCombinations){
+	for(auto &Combination : BestSolsUsersCombination){
 		// All users are solved at this point
 		Value *VComb = Combination.first;
 		WideningIntegerSolutionInfo *Sol = Combination.second;
 		Value *NewV = VComb;
 		assert(isa<Instruction>(NewV) || isa<ConstantInt>(NewV));
-		NewV->mutateType(Sol->getUpdatedWidth());
+		NewV->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
 		// TODO check do we need to mutate the type of the operands?
-		VComb.replaceAllUsesWith(NewV);
+		VComb->replaceAllUsesWith(NewV);
 		// we need to have all the Combinations of the LegalUsersSolutions..	
-			
-	}	
+				
+	}
+	return true;
 }
   
 WideningIntegerArithmetic::SolutionSet 
