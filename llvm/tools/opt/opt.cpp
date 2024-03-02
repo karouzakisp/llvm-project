@@ -393,7 +393,8 @@ static bool shouldPinPassToLegacyPM(StringRef Pass) {
       "expand-large-div-rem",
       "structurizecfg",
       "fix-irreducible",
-      "expand-large-fp-convert"
+      "expand-large-fp-convert",
+      "widening-integer-arithmetic"
   };
   for (const auto &P : PassNamePrefix)
     if (Pass.startswith(P))
@@ -449,6 +450,7 @@ int main(int argc, char **argv) {
   initializeAtomicExpandPass(Registry);
   initializeRewriteSymbolsLegacyPassPass(Registry);
   initializeWinEHPreparePass(Registry);
+  initializeWideningIntegerArithmeticPass(Registry);
   initializeDwarfEHPrepareLegacyPassPass(Registry);
   initializeSafeStackLegacyPassPass(Registry);
   initializeSjLjEHPreparePass(Registry);
