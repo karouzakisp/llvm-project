@@ -46,10 +46,13 @@ using namespace llvm;
 #define PASS_NAME "WideningIntegerArithmetic"
 
 #define DEBUG_TYPE "widening-integer-arithmetic"
+
+#define ICMP_CONSTANT 2000
 STATISTIC(NumSExtsDropped, "Number of ISD::SIGN_EXTEND nodes that were dropped"); 
 STATISTIC(NumZExtsDropped, "Number of ISD::ZERO_EXTEND nodes that were dropped");
 STATISTIC(NumAnyExtsDropped, "Number of ISD::ANY_EXTEND nodes that were dropped");
 STATISTIC(NumTruncatesDropped, "Number of ISD::TRUNCATE nodes that were dropped"); 
+
 
 namespace {
 
@@ -111,7 +114,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 
 
     UnaryFillTypeSet getUnaryFillTypes(unsigned Opcode);
-    FillTypeSet getFillTypes(unsigned Opcode);
+    FillTypeSet getFillTypes(Instruction *Instr);
     inline IntegerFillType getOrNullFillType(
             FillTypeSet availableFillTypes, IntegerFillType Left, 
             IntegerFillType Right);
@@ -135,7 +138,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 
     SolutionSet visitXOR(Instruction *Instr);
     SolutionSet visitInstruction(Instruction *Instr);
-    SolutionSet visitBINOP(BinaryOperator *Binop);
+    SolutionSet visitBINOP(Instruction *Binop);
     SolutionSet visitLOAD(Instruction *Instr);
     SolutionSet visitSTORE(Instruction *Instr);
     SolutionSet visitUNOP(Instruction *Instr);
@@ -212,7 +215,8 @@ inline unsigned WideningIntegerArithmetic::getExtensionChoice(
 		enum IntegerFillType ExtChoice){
   return ExtChoice == SIGN ? Instruction::SExt:
                              Instruction::ZExt;
-} 
+}
+
 
 bool WideningIntegerArithmetic::IsBinop(unsigned Opcode){
   switch(Opcode){
@@ -297,7 +301,7 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
   
   if(IsBinop(Opcode)){
     dbgs() << " and Visiting Binop..\n"; 
-    return visitBINOP(dyn_cast<BinaryOperator>(Instr));
+    return visitBINOP(Instr);
   }
   else if(IsUnop(Opcode)){
     //dbgs() << " and Visiting Unop...\n"; 
@@ -420,13 +424,18 @@ bool WideningIntegerArithmetic::addNonRedudant(SolutionSet &Solutions,
 
 
 WideningIntegerArithmetic::FillTypeSet 
-WideningIntegerArithmetic::getFillTypes(unsigned Opcode){
+WideningIntegerArithmetic::getFillTypes(Instruction *Instr){
+  unsigned Opcode = Instr->getOpcode();
   dbgs() << "Opcode is " << Opcode << "    " << OpcodesToStr[Opcode] << "\n";
   unsigned IsdOpc = TLI->InstructionOpcodeToISD(Opcode);
   assert(IsBinop(Opcode) && "Not a binary operator." ); 
-  dbgs() << "Returning fill types with opc " << IsdOpc << "\n";
-  dbgs() << " And ISD:UDIV is " << ISD::UDIV << "\n";
-  return FillTypesMap[TLI->InstructionOpcodeToISD(Opcode)];
+  if(auto *CI = dyn_cast<ICmpInst>(Instr)){
+    unsigned Pred = CI->getPredicate();
+    dbgs() << "Searching in " << ICMP_CONSTANT + Pred << "\n";
+    return FillTypesMap[ICMP_CONSTANT + Pred];
+  }
+
+  return FillTypesMap[IsdOpc];
 }
 
 WideningIntegerArithmetic::UnaryFillTypeSet
@@ -499,7 +508,9 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
 
   setFillType(); // set the fill type of the machine TODO check
   initOperatorsFillTypes();
-	DL = &F.getParent()->getDataLayout();
+	
+  
+  DL = &F.getParent()->getDataLayout();
 	TM = &getAnalysis<TargetPassConfig>().getTM<TargetMachine>();
 	const TargetSubtargetInfo *SubtargetInfo = TM->getSubtargetImpl(F);
 	TLI = SubtargetInfo->getTargetLowering();
@@ -546,7 +557,7 @@ WideningIntegerArithmetic::tryClosure(Instruction *Instr, bool Changed){
   unsigned Opcode = Instr->getOpcode();
   dbgs() << "Inside try closure. " << "\n";
   if(IsBinop(Opcode)){
-    FillTypeSet Fills = getFillTypes(Opcode);
+    FillTypeSet Fills = getFillTypes(Instr);
     FillsSize = Fills.size();
   }
   else if(IsUnop(Opcode)){
@@ -604,11 +615,10 @@ inline
 WideningIntegerArithmetic::FillTypeSet 
 WideningIntegerArithmetic::getOperandFillTypes(Instruction *Instr){
 
-  FillTypeSet Set;
-  unsigned Opcode = Instr->getOpcode();
-  return getFillTypes(Opcode);
+  return getFillTypes(Instr);
 
 	// TODO handle the case below.
+  // TODO right an overflow analysis.
 /*  switch(Opcode){
     default: break;
     case (ISD::ADD):
@@ -701,8 +711,9 @@ WideningIntegerArithmetic::visitLOAD(Instruction *Instr){
 
 
 	// TODO check
-  IntegerFillType FillType = IntegerFillType::UNDEFINED; 
-  
+  //IntegerFillType FillType = IntegerFillType::UNDEFINED; 
+  IntegerFillType FillType = ExtensionChoice;
+
   unsigned int Width = Instr->getType()->getScalarSizeInBits();
   int FillTypeWidth = Width;
   unsigned Opc = Instr->getOpcode(); 
@@ -758,15 +769,13 @@ DenseMap<Value *, WideningIntegerSolutionInfo *>
 WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr){
 
   SmallVector<Value *, 4> VUsers;
-  SmallVector<SolutionSet, 4> UsersSolution;
 	std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>> Combinations;
 	DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;	
   if(Instr->getNumUses() == 0 ){
     return BestCombination;
   }
   for(auto &Use : Instr->uses()){
-    Value *VUser1 = Use.get();
-    UsersSolution.push_back(AvailableSolutions[VUser1]);
+    Value *VUser1 = Use.getUser();
     VUsers.push_back(VUser1);
   }
   Value *VUser = VUsers[0];
@@ -877,7 +886,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	// check IsRedudant uses fillTypeWidth 
 // Return all the solution based on binop rules op1 x op2 -> W
 WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
+WideningIntegerArithmetic::visitBINOP(Instruction *Binop){
 	
   SolutionSet Sols;
  
@@ -936,7 +945,7 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
       auto leftFill = leftSolution->getFillType();
       auto rightFill = rightSolution->getFillType();
       dbgs() << "Left Fill type is " << leftFill << "\n";
-      dbgs() << "Left Fill type is " << rightFill << "\n";
+      dbgs() << "right Fill type is " << rightFill << "\n";
       auto FillType = getOrNullFillType((OperandFillTypes),
                                   leftSolution->getFillType(),
                                   rightSolution->getFillType());
@@ -950,6 +959,8 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
       if(w1 != w2){
        	LLVM_DEBUG(dbgs() << "Width " << w1 << "and Width " << w2 << " are not the same skipping solution.." << "\n");
        	dbgs() << "Width " << w1 << "and Width " << w2 << " are not the same skipping solution.." << "\n";
+        dbgs() << "Left Solution --> " << *leftSolution << '\n';
+        dbgs() << "Right Solution --> " << *rightSolution << '\n';
 			 	continue;
 			}
       if(w1 == 0 || w2 == 0){
@@ -963,7 +974,7 @@ WideningIntegerArithmetic::visitBINOP(BinaryOperator *Binop){
       EVT NewVT = EVT::getIntegerVT(*Ctx, w1); 
       if(!TLI->isOperationLegal(TLI->InstructionOpcodeToISD(Opcode), NewVT)){
 				LLVM_DEBUG(dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n");
-				dbgs() << "Width: " << w1 << " Is not legal for binop" << "\n";
+				dbgs() << "Width: " << w1 << " Is not legal for binop " << OpcodesToStr[Opcode] << "\n";
         continue;
 			}
       LLVM_DEBUG(dbgs() << "The Operation is legal for that newVT--> "<<  w1 << "\n");
@@ -1001,7 +1012,6 @@ std::list<WideningIntegerSolutionInfo*> WideningIntegerArithmetic::visitFILL(
                           Instruction *Instr){
   
   unsigned Width = Instr->getType()->getScalarSizeInBits();
-  unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
   unsigned char FillTypeWidth = getKnownFillTypeWidth(Instr); 
  	Value *VInstr = dyn_cast<Value>(Instr);
 
@@ -1200,7 +1210,6 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     Opc = -2; // Indicates unknown opc 
   }
   SolutionSet Sols;
-  unsigned ExtOpc = Instr->getOpcode();
   switch(Instr->getOpcode()){
     case Instruction::SExt: ++NumSExtsDropped; break;
     case Instruction::ZExt: ++NumZExtsDropped; break;
@@ -1215,13 +1224,12 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
   LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
   LLVM_DEBUG(dbgs() << "Opc of Node is " << Instr->getOpcode() << "Opc of Node str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
-  unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
   for(auto Solution : ExprSolutions){ 
   // We simply drop the extension and we will later see if it's needed.
     LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n'); 
   	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(
-        Instr->getOpcode(), Solution->getOpcode(), ExtensionChoice, 
+        Instr->getOpcode(), Solution->getNewOpcode(), ExtensionChoice, 
         FillTypeWidth, ExtendedWidth /*OldWidth*/, 
       OldWidth/*NewWidth*/, Solution->getCost(), Instr);
     // TODO check OldWidth must come from The operand of the Extension
@@ -1245,10 +1253,10 @@ bool WideningIntegerArithmetic::applyChain(
 			if(auto *I = dyn_cast<Instruction>(VComb)){
 				dbgs() << "Opcode is " << I->getOpcode() << '\n';
 			}
-			if(auto *CI = dyn_cast<ConstantInt>(VComb)){
+			if(isa<ConstantInt>(VComb)){
 				dbgs() << "Opcode is Constant" << '\n';
 			}
-			return false;
+			return Changed;
 		}
 	}
 	for(auto &Combination : BestSolsUsersCombination){
@@ -1260,10 +1268,11 @@ bool WideningIntegerArithmetic::applyChain(
 		NewV->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
 		// TODO check do we need to mutate the type of the operands?
 		VComb->replaceAllUsesWith(NewV);
-		// we need to have all the Combinations of the LegalUsersSolutions..	
+		// we need to have all the Combinations of the LegalUsersSolutions..
+    Changed = true;	
 				
 	}
-	return true;
+	return Changed;
 }
   
 WideningIntegerArithmetic::SolutionSet 
@@ -1444,10 +1453,8 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
                 Quot, Shl, Shra, Shrl, Sub, Xor;
     Eq.insert(std::make_tuple(SIGN, SIGN, SIGN));
     Eq.insert(std::make_tuple(ZEROS, ZEROS, ZEROS)); 
-    FillTypesMap[ISD::CondCode::SETEQ + ISD::BUILTIN_OP_END] =  Eq;
 
     Ge.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    FillTypesMap[ISD::CondCode::SETGE + ISD::BUILTIN_OP_END] =  Ge;
 
     Geu.insert(std::make_tuple(SIGN, SIGN, SIGN));
     Geu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
@@ -1464,20 +1471,29 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
     Mulu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
     // TODO what to do with Geu, Gtu, Leu, Ltu and Mulu ??   
  
-    Gt.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    FillTypesMap[ISD::CondCode::SETGT + ISD::BUILTIN_OP_END] =  Gt;
+    Gt.insert(std::make_tuple(SIGN, SIGN, ZEROS));
+    FillTypesMap[CmpInst::ICMP_UGE + ICMP_CONSTANT] =  Geu;
+    FillTypesMap[CmpInst::ICMP_UGT + ICMP_CONSTANT] =  Gtu;
+    FillTypesMap[CmpInst::ICMP_ULE + ICMP_CONSTANT] =  Leu;
+    FillTypesMap[CmpInst::ICMP_ULT + ICMP_CONSTANT] =  Ltu;
+    FillTypesMap[CmpInst::ICMP_EQ + ICMP_CONSTANT] =  Eq;
+    FillTypesMap[CmpInst::ICMP_SGE + ICMP_CONSTANT] =  Ge;
+    FillTypesMap[CmpInst::ICMP_SGT + ICMP_CONSTANT] = Gt;
     
     Le.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    FillTypesMap[ISD::CondCode::SETLE + ISD::BUILTIN_OP_END] =  Le;
+    FillTypesMap[CmpInst::ICMP_SLE + ICMP_CONSTANT] =  Le;
 
     Lt.insert(std::make_tuple(SIGN, SIGN, SIGN));
-    FillTypesMap[ISD::CondCode::SETLT + ISD::BUILTIN_OP_END] =  Lt;
+    FillTypesMap[CmpInst::ICMP_SLT + ICMP_CONSTANT] =  Lt;
 
     Mod.insert(std::make_tuple(SIGN, SIGN, SIGN));
     FillTypesMap[ISD::SREM] = SDivFillTypes;
     
     Modu.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
     FillTypesMap[ISD::UREM] = SDivFillTypes;
+    
+    Ne.insert(std::make_tuple(SIGN, SIGN, ZEROS));
+    FillTypesMap[CmpInst::ICMP_NE + ICMP_CONSTANT] =  Ne;
      
     // MOD -> REMAINDER
     // DIV -> QUOTIENT
@@ -1488,8 +1504,6 @@ void WideningIntegerArithmetic::initOperatorsFillTypes(){
     Mul.insert(std::make_tuple(SIGN, SIGN, SIGN)); // IF NOT OVERFLOW OCCURS
     FillTypesMap[ISD::MUL] = Mul;
     // TODO check ISD for MULU does not exist or it's a MULHU
-    Ne.insert(std::make_tuple(SIGN, SIGN, ZEROS));
-    FillTypesMap[ISD::CondCode::SETNE + ISD::BUILTIN_OP_END] =  Ne;
 
     Or.insert(std::make_tuple(SIGN, SIGN, SIGN)); 
     Or.insert(std::make_tuple(ZEROS, ZEROS, ZEROS));
