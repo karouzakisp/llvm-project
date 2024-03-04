@@ -845,7 +845,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		IncomingValues.push_back(V);
-		if(!isSolved(V)){
+		if(isSolved(V)){
 			continue;
 		}
 		if(auto *VI = dyn_cast<Instruction>(V)){
@@ -860,20 +860,27 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   auto ValuePos = std::find(IncomingValues.begin(), IncomingValues.end(), 
 			SelectedValue);
   ValuesWithout.erase(ValuePos);
+	bool AddedSol = false;
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
     SolutionSet OneCombination; 
 		OneCombination.push_back(Sol);
-    bool all_matching = true;
+    bool AllMatching = true;
     for(Value *Val2 : ValuesWithout){
+			bool FoundPair = false;
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
+				// TODO check can the combination have different fillType? Probably not.
         if(isLegalAndMatching(Sol, Sol2)){
           OneCombination.push_back(Sol2);
-        }else{
-          all_matching = false;
-        }
-      }
+					FoundPair = true;
+        	break;
+				}      
+			}
+			if(!FoundPair){
+				OneCombination.clear();
+				AllMatching = false;
+			}
     }
-    if(all_matching){
+    if(AllMatching){
       Combinations.push_back(OneCombination);
     }
     OneCombination.clear();
