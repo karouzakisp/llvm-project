@@ -501,12 +501,14 @@ WideningIntegerArithmetic::visitXOR(Instruction *Instr ){
 
 void WideningIntegerArithmetic::setFillType(Type *IType){
 	EVT VT = TLI->getValueType(*DL, IType);
-	EVT NewVT = VT; 
+	EVT NewVT = VT;
+ /*	
 	if(TLI->isSExtCheaperThanZExt(VT, NewVT)){ 
     ExtensionChoice = SIGN;
 	}else{
 		ExtensionChoice = ZEROS;
-	}
+	}*/
+	ExtensionChoice = SIGN;
 }
 
 bool WideningIntegerArithmetic::runOnFunction(Function &F){
@@ -731,6 +733,7 @@ WideningIntegerArithmetic::visitLOAD(Instruction *Instr){
                 Width, FillTypeWidth, 0, VInstr);
 
   SolutionSet WidenSols;
+	WidenSols.push_back(WIALoad);
   unsigned ExtensionOpc = getExtensionChoice(FillType);
 	for(int IntegerSize : IntegerSizes){
 		EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize); 
