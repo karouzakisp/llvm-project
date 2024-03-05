@@ -713,28 +713,28 @@ WideningIntegerArithmetic::visitLOAD(Instruction *Instr){
 	// TODO check
   //IntegerFillType FillType = IntegerFillType::UNDEFINED; 
   IntegerFillType FillType = ExtensionChoice;
-
+  Value *VInstr = dyn_cast<Value>(Instr);
   unsigned int Width = Instr->getType()->getScalarSizeInBits();
-  int FillTypeWidth = Width;
+  int FillTypeWidth = getKnownFillTypeWidth(Instr);
   unsigned Opc = Instr->getOpcode(); 
   auto WIALoad = new WIA_LOAD(Opc, Opc, FillType, FillTypeWidth,
-                Width, FillTypeWidth, 0, dyn_cast<Value>(Instr));
-  //unsigned ExtensionOpc = getExtensionChoice(FillType);
- 	SolutionSet WidenSols;	
-	/*for(int IntegerSize : IntegerSizes){
-		EVT NewVT = EVT::getIntegerVT(*DAG.getContext(), IntegerSize); 
+                Width, FillTypeWidth, 0, VInstr);
+
+  SolutionSet WidenSols;
+  unsigned ExtensionOpc = getExtensionChoice(FillType);
+	for(int IntegerSize : IntegerSizes){
+		EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize); 
 		if(IntegerSize <= FillTypeWidth) // TODO check
 			continue;
-		if(!TLI.isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT))
+		if(!TLI->isOperationLegal(ExtensionOpc, NewVT))
 			continue;
 		// Results to a widened expr based on ExtensionOpc
 		WideningIntegerSolutionInfo *Widen = new WIA_WIDEN(
-			ExtensionOpc, FillType, FillTypeWidth, Width,
-			IntegerSize, 1, Node);
+			Opc, ExtensionOpc, FillType, FillTypeWidth, Width,
+			IntegerSize, 1, VInstr);
 		Widen->addOperand(WIALoad); 
 		WidenSols.push_back(Widen); 
-	}	*/
- 	WidenSols.push_back(WIALoad);	
+	}	
  	return WidenSols; 
 }
   
@@ -1004,7 +1004,6 @@ WideningIntegerArithmetic::visitBINOP(Instruction *Binop){
   }
   //dbgs() << "Calling closure here.\n"; 
   // call closure if multiple FillTypes or Multiple Binop Widths
-  // we know VBinop is an Instruction for sure so we can cast it 
   return tryClosure(Binop, AddedSol); 
 }
 
