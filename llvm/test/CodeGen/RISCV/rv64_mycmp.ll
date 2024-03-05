@@ -19,15 +19,15 @@ define i64 @test_load_and_cmp(i16 %a) nounwind {
   %ld1 = load i16, ptr @gd1
   %k = load i64, ptr @gd2
 
-  %y = zext i16 %ld to i64
-  %x = zext i16 %ld1 to i64
+  %y = sext i16 %ld to i64
+  %x = sext i16 %ld1 to i64
 
   %ud = udiv i64 %x, %y
   %rescmp = icmp uge i64 %k, %ud
   
   %ud_truncated = trunc i64 %ud to i16
 
-  %ud_ext = zext i16 %ud_truncated to i64
+  %ud_ext = sext i16 %ud_truncated to i64
 
   %res = udiv i64 %ud_ext, %k
 
