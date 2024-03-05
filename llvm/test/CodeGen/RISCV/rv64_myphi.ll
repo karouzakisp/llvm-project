@@ -6,19 +6,16 @@
 
 
 define i64 @test_load_and_cmp(i32 signext %arg1, i32 signext arg2) nounwind {
-; RV64I-LABEL: test_load_and_cmp:
-; RV64I:       # %bb.0:
-; RV64I-NEXT:    lui a1, %hi(gd)
-; RV64I-NEXT:    lh a1, %lo(gd)(a1)
-; RV64I-NEXT:    xor a0, a0, a1
-; RV64I-NEXT:    slli a0, a0, 48
-; RV64I-NEXT:    srai a0, a0, 48
-; RV64I-NEXT:    addi a0, a0, 10
-; RV64I-NEXT:    ret
-  %ld = load i16, ptr @gd
-  %ld1 = load i16, ptr @gd1
-  %k = load i64, ptr @gd2
 
+
+bb:
+  %i = ashr i32 %arg1, %arg2
+  br label %bb2
+
+bb2:
+  %ld = load i16, ptr @gd
+  %i3 = ph i32 [%i, %bb] [%i5, %bb2]
+  %i4 = tail call signext i32 @bar(i32 signext %i3)
   %y = zext i16 %ld to i64
   %x = zext i16 %ld1 to i64
 
