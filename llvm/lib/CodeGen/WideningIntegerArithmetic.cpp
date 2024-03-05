@@ -124,7 +124,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 
     FillTypeSet getOperandFillTypes(Instruction *Instr);
   
-    void setFillType();  
+    void setFillType(Type *IType);  
     inline bool isSolved(Value *V);
 
     bool addNonRedudant(SolutionSet &Solutions, 
@@ -499,14 +499,18 @@ WideningIntegerArithmetic::visitXOR(Instruction *Instr ){
 
 
 
-// TODO RISC has sign not zeros
-void WideningIntegerArithmetic::setFillType(){
-    ExtensionChoice = ZEROS;
+void WideningIntegerArithmetic::setFillType(Type *IType){
+	EVT VT = TLI->getValueType(*DL, IType);
+	EVT NewVT = VT; 
+	if(TLI->isSExtCheaperThanZExt(VT, NewVT)){ 
+    ExtensionChoice = SIGN;
+	}else{
+		ExtensionChoice = ZEROS;
+	}
 }
 
 bool WideningIntegerArithmetic::runOnFunction(Function &F){
 
-  setFillType(); // set the fill type of the machine TODO check
   initOperatorsFillTypes();
 	
   
@@ -517,6 +521,14 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
  	TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);	
   Ctx = &F.getParent()->getContext();
 	DL = &F.getParent()->getDataLayout();
+  auto &FBB = F.getEntryBlock();
+	if(FBB.empty()){
+		dbgs() << "Function has no Instructions" << '\n';
+		return false;
+	}
+	setFillType((&*(FBB.begin())->getType()));
+	dbgs() << "ExtensionChoice is " << ExtensionChoice << '\n';
+	
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
       dbgs() << "InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
@@ -524,7 +536,6 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
 				continue;
 
 			if(isa<IntegerType>(I.getType())) {
-        dbgs() << "Visiting widening..." << '\n';
 				visit_widening(&I);  
 			}
       dbgs() << "---------------------------------------------------------" << '\n';
