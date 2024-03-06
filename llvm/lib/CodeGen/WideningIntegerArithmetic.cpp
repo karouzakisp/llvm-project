@@ -325,9 +325,6 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
     //dbgs() << " and Visiting Truncation ..\n"; 
     return visitDROP_TRUNC(Instr);
   }
-	else if(IsPHI(Opcode)){
-		visitPHI(Instr); // TODO FIXME return type? move out? 
-	}
   else{
     dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
     LLVM_DEBUG(dbgs() << "Opcode str is" << OpcodesToStr[Opcode] << "\n");
@@ -356,8 +353,11 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
     return AvailableSolutions[Instr]; 
   } 
   for (Value* V : Instr->operand_values() ){    
-    if(auto *I = dyn_cast<Instruction>(V)){ // #TODO 1 check value size is 1?
+    if(auto *I = dyn_cast<Instruction>(V)){ 
    	 SolutionSet Sols = visit_widening(I);
+     if(isa<PhiInst>(I)){
+      visitPHI(I);
+     }
 		}
 		else if(auto *CI = dyn_cast<ConstantInt>(V)){
 			visitCONSTANT(CI);
@@ -520,7 +520,6 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
       dbgs() << "InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
-      dbgs() << "Inst Type is " << I.getType() << "\n";
 			if(IsSolved(&I))
 				continue;
 
@@ -848,6 +847,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 		if(isSolved(V)){
 			continue;
 		}
+    // TODO check visit_widening here? or visitInstruction is enough?
 		if(auto *VI = dyn_cast<Instruction>(V)){
 			visitInstruction(VI);
 		}
