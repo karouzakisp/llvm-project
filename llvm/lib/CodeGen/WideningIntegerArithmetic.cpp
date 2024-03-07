@@ -154,8 +154,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitSUBSUME_INDEX(Instruction *Instr);
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
-		std::vector<WideningIntegerArithmetic::SolutionSet>
-			visitPHI(Instruction *Instr);
+		SolutionSet visitPHI(Instruction *Instr);
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
@@ -355,7 +354,7 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
   for (Value* V : Instr->operand_values() ){    
     if(auto *I = dyn_cast<Instruction>(V)){ 
    	 SolutionSet Sols = visit_widening(I);
-     if(isa<PhiInst>(I)){
+     if(isa<PHINode>(I)){
       visitPHI(I);
      }
 		}
@@ -847,12 +846,12 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
   return Known.getBitWidth();	 
 }
 
-std::vector<WideningIntegerArithmetic::SolutionSet>
+WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	// we know that Instr is PHINode from isPHI method so we can cast it.
 	auto *PhiInst = dyn_cast<PHINode>(Instr);
 	int NumIncValues = PhiInst->getNumIncomingValues();
-  std::vector<SolutionSet> Combinations;
+  SolutionSet Combinations;
 	SmallVector<Value*, 4> IncomingValues;
 	
 	for(int i = 0; i < NumIncValues; i++){
@@ -874,31 +873,18 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   auto ValuePos = std::find(IncomingValues.begin(), IncomingValues.end(), 
 			SelectedValue);
   ValuesWithout.erase(ValuePos);
-	bool AddedSol = false;
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
-    SolutionSet OneCombination; 
-		OneCombination.push_back(Sol);
-    bool AllMatching = true;
+		Combinations.push_back(Sol);
     for(Value *Val2 : ValuesWithout){
-			bool FoundPair = false;
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
 				// TODO check can the combination have different fillType? Probably not.
         if(isLegalAndMatching(Sol, Sol2)){
-          OneCombination.push_back(Sol2);
-					FoundPair = true;
-        	break;
+          Combinations.push_back(Sol2);
 				}      
 			}
-			if(!FoundPair){
-				OneCombination.clear();
-				AllMatching = false;
-			}
     }
-    if(AllMatching){
-      Combinations.push_back(OneCombination);
-    }
-    OneCombination.clear();
   }
+	AvailableSolutions[dyn_cast<Value>(Instr)] = Combinations;
   return Combinations;
 		
 }
