@@ -99,8 +99,8 @@ class WideningIntegerArithmetic : public FunctionPass {
     
  
     // checks whether an Instruction in the Function F is visited and solved` 
-    isSolvedMap SolvedInstructions; 
-    bool IsSolved(Instruction *Instr);
+    isSolvedMap SolvedInstructions;
+	 	DenseMap<Value *, bool> VisitedInstructions;		
     // Holds all the available solutions 
     AvailableSolutionsMap AvailableSolutions;
 
@@ -125,7 +125,8 @@ class WideningIntegerArithmetic : public FunctionPass {
     FillTypeSet getOperandFillTypes(Instruction *Instr);
   
     void setFillType(Type *IType);  
-    inline bool isSolved(Value *V);
+    inline bool IsSolved(Value *V);
+    inline bool IsVisited(Value *V);
 
     bool addNonRedudant(SolutionSet &Solutions, 
                         WideningIntegerSolutionInfo* GeneratedSol);
@@ -348,14 +349,21 @@ long long int counter = 0;
 SmallVector<WideningIntegerSolutionInfo *> 
 WideningIntegerArithmetic::visit_widening(Instruction *Instr){
  	SolutionSet EmptySols;
-
-  if(IsSolved(Instr) ){
+	Value *VInstr = dyn_cast<Value>(Instr);
+	dbgs() << "Inside visit_widening Instr Opcode is " << OpcodesToStr[Instr->getOpcode()] << '\n';
+	VisitedInstructions[VInstr] = true;
+  if(IsSolved(VInstr) ){
     LLVM_DEBUG(dbgs() << "Opcode str is " << OpcodesToStr[Instr->getOpcode()] << "\n"); 
     return AvailableSolutions[Instr]; 
   } 
-  for (Value* V : Instr->operand_values() ){    
-    if(auto *I = dyn_cast<Instruction>(V)){ 
-   	 SolutionSet Sols = visit_widening(I);
+  for (Value* V : Instr->operand_values() ){
+	 	if(IsSolved(V)){
+			continue;
+		}	
+    else if(auto *I = dyn_cast<Instruction>(V)){
+		 	if(!IsVisited(I)){	
+   	 		visit_widening(I);
+			}
 		}
 		else if(auto *CI = dyn_cast<ConstantInt>(V)){
 			visitCONSTANT(CI);
@@ -371,7 +379,6 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
 	// #TODO to get the opcode need to check and cast to a Instruction
 	//LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << U->getOpcode() << "\n");
   dbgs() << "Solved Instruction number !!: " << counter << "\n";
-	Value *VInstr = dyn_cast<Value>(Instr);
   SolvedInstructions[VInstr] = true; 
 	counter++;
   dbgs () << "Solutions Size is --> " << CalcSolutions.size() << '\n';
@@ -532,7 +539,8 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
       dbgs() << "InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
-			if(IsSolved(&I))
+			Value *VInstr = dyn_cast<Value>(&I);
+			if(IsSolved(VInstr))
 				continue;
 
 			if(isa<IntegerType>(I.getType())) {
@@ -550,16 +558,22 @@ INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(WideningIntegerArithmetic, DEBUG_TYPE,
                       PASS_NAME, false, false)
 
-
-// Checks whether a SDNode is visited 
-// so we don't visit and solve the same Node again
-inline bool WideningIntegerArithmetic::IsSolved(Instruction *Instr){
-  auto isVisited = SolvedInstructions.find(dyn_cast<Value>(Instr));
-  if(isVisited != SolvedInstructions.end())
+inline bool WideningIntegerArithmetic::IsVisited(Value *V){
+  auto IsVisited = VisitedInstructions.find(V);
+  if(IsVisited != VisitedInstructions.end())
     return true;
   
   return false;
 }
+
+inline bool WideningIntegerArithmetic::IsSolved(Value *V){
+  auto IsSolved = SolvedInstructions.find(V);
+  if(IsSolved != SolvedInstructions.end())
+    return true;
+  
+  return false;
+}
+
 
 WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::tryClosure(Instruction *Instr, bool Changed){
@@ -856,11 +870,11 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		IncomingValues.push_back(V);
-		if(isSolved(V)){
-			continue;
-		}
     // TODO check visit_widening here? or visitInstruction is enough?
 		if(auto *VI = dyn_cast<Instruction>(V)){
+			if(IsSolved(VI)){
+				continue;
+			}
 			visitInstruction(VI);
 		}
 		if(auto *CI = dyn_cast<ConstantInt>(V)){
@@ -870,8 +884,12 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   Value *SelectedValue = IncomingValues[0];
   SmallVector<Value *, 4> ValuesWithout = IncomingValues;
   auto ValuePos = std::find(IncomingValues.begin(), IncomingValues.end(), 
-			SelectedValue);
+			IncomingValues[0]);
+	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
+	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
+	dbgs() << "Values Without size is " << ValuesWithout.size() <<'\n';
   ValuesWithout.erase(ValuePos);
+	dbgs() << "After erase" << '\n';
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
 		Combinations.push_back(Sol);
     for(Value *Val2 : ValuesWithout){
@@ -1421,13 +1439,6 @@ WideningIntegerArithmetic::createWidth(unsigned char op1,
 }
 
 
-inline bool WideningIntegerArithmetic::isSolved(Value *V){
-	auto isVisited = SolvedInstructions.find(V);
-  if(isVisited != SolvedInstructions.end())
-    return true;
-  
-  return false;
-}
 
 void WideningIntegerArithmetic::initOperatorsFillTypes(){
 
