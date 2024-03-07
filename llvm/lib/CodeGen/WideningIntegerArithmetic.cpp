@@ -323,7 +323,9 @@ WideningIntegerArithmetic::visitInstruction(Instruction *Instr){
     TruncCounter++; 
     //dbgs() << " and Visiting Truncation ..\n"; 
     return visitDROP_TRUNC(Instr);
-  }
+  }else if(IsPHI(Opcode)){
+		return visitPHI(Instr);
+	}
   else{
     dbgs() << "Could not found a solutionOpcode is " << Opcode << "\n";
     LLVM_DEBUG(dbgs() << "Opcode str is" << OpcodesToStr[Opcode] << "\n");
@@ -354,9 +356,6 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
   for (Value* V : Instr->operand_values() ){    
     if(auto *I = dyn_cast<Instruction>(V)){ 
    	 SolutionSet Sols = visit_widening(I);
-     if(isa<PHINode>(I)){
-      visitPHI(I);
-     }
 		}
 		else if(auto *CI = dyn_cast<ConstantInt>(V)){
 			visitCONSTANT(CI);
@@ -368,7 +367,7 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
 	}
   //dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n";
 	// is ConstantInt visited here?
-	auto CalcSolutions = visitInstruction(Instr);
+	auto CalcSolutions = visitInstruction(Instr);	
 	// #TODO to get the opcode need to check and cast to a Instruction
 	//LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << U->getOpcode() << "\n");
   dbgs() << "Solved Instruction number !!: " << counter << "\n";
@@ -1405,7 +1404,8 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitNATURAL(
 
   for(WideningIntegerSolutionInfo *Sol : Sols){
 	 	Type *NewType = getTypeFromInteger(Sol->getUpdatedWidth());
-    if(Sol->getFillType() == ANYTHING && TTI->isTypeLegal(NewType))
+    if(Sol->getFillType() == ANYTHING && TTI->isTypeLegal(NewType) && 
+				Sol->getFillTypeWidth() == Sol->getUpdatedWidth())
       Sol->setFillType(ExtensionChoice); 
   }
   return Sols;
