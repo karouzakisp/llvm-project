@@ -870,11 +870,11 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		IncomingValues.push_back(V);
+		if(IsSolved(V)){
+			continue;
+		}
     // TODO check visit_widening here? or visitInstruction is enough?
 		if(auto *VI = dyn_cast<Instruction>(V)){
-			if(IsSolved(VI)){
-				continue;
-			}
 			visitInstruction(VI);
 		}
 		if(auto *CI = dyn_cast<ConstantInt>(V)){
@@ -888,11 +888,11 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
 	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
 	dbgs() << "Values Without size is " << ValuesWithout.size() <<'\n';
-  ValuesWithout.erase(ValuePos);
+  ValuesWithout.erase(ValuesWithout.begin());
 	dbgs() << "After erase" << '\n';
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
 		Combinations.push_back(Sol);
-    for(Value *Val2 : ValuesWithout){
+    for(Value *Val2 : IncomingValues){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
 				// TODO check can the combination have different fillType? Probably not.
         if(isLegalAndMatching(Sol, Sol2)){
