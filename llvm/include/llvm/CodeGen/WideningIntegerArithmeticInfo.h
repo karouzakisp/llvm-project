@@ -97,6 +97,7 @@ enum IntegerFillType{
   
 enum WIAKind{
   WIAK_BINOP= 0,
+	WIAK_PHI,
   WIAK_UNOP,
   WIAK_FILL,
   WIAK_WIDEN,
@@ -345,6 +346,28 @@ class WIA_BINOP : public WideningIntegerSolutionInfo
   
 };
 
+class WIA_PHI : public WideningIntegerSolutionInfo
+{
+  public:
+  ~WIA_PHI() {}
+  WIA_PHI() {}
+  WIA_PHI(unsigned Opcode_, unsigned NewOpcode_ ,IntegerFillType FillType_,
+            unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
+            short int Cost_, Value *V_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_PHI, V_) {}
+  
+  static inline bool classof(WIA_PHI const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_PHI: return true;
+      default: return false;
+    } 
+  } 
+  
+};
 
 class WIA_FILL : public WideningIntegerSolutionInfo
 {

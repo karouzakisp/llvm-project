@@ -864,12 +864,15 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	// we know that Instr is PHINode from isPHI method so we can cast it.
 	auto *PhiInst = dyn_cast<PHINode>(Instr);
 	int NumIncValues = PhiInst->getNumIncomingValues();
-  SolutionSet Combinations;
+  SolutionSet Solutions;
 	SmallVector<Value*, 4> IncomingValues;
+	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
 	
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		IncomingValues.push_back(V);
+		// IF Instr->getblock is the same as V->getBlock then continue 
+		// because 
 		if(IsSolved(V)){
 			continue;
 		}
@@ -883,26 +886,34 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	}
   Value *SelectedValue = IncomingValues[0];
   SmallVector<Value *, 4> ValuesWithout = IncomingValues;
-  auto ValuePos = std::find(IncomingValues.begin(), IncomingValues.end(), 
-			IncomingValues[0]);
 	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
 	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
-	dbgs() << "Values Without size is " << ValuesWithout.size() <<'\n';
   ValuesWithout.erase(ValuesWithout.begin());
-	dbgs() << "After erase" << '\n';
+	// TODO Solution maybe adds redudant Solutions
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
-		Combinations.push_back(Sol);
-    for(Value *Val2 : IncomingValues){
+    for(Value *Val2 : ValuesWithout){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
-				// TODO check can the combination have different fillType? Probably not.
         if(isLegalAndMatching(Sol, Sol2)){
-          Combinations.push_back(Sol2);
+					IntegerFillType NewFillType = 
+						Sol->getFillType() == Sol2->getFillType() ? Sol->getFillType() :
+																 												ANYTHING;
+					unsigned NewFillTypeWidth = 
+						Sol->getFillTypeWidth() >= Sol2->getFillTypeWidth() ? 
+						Sol->getFillTypeWidth() : 
+						Sol2->getFillTypeWidth();
+					unsigned NewCost = Sol->getCost() > Sol2->getCost() ? 
+															Sol->getCost() : Sol2->getCost();
+					auto PhiSol = new WIA_PHI(PhiInst->getOpcode(), PhiInst->getOpcode(),
+							NewFillType, NewFillTypeWidth, InstrWidth, Sol->getUpdatedWidth(), 
+						 NewCost, dyn_cast<Value>(PhiInst));	
+
+          Solutions.push_back(PhiSol);
 				}      
 			}
     }
   }
-	AvailableSolutions[dyn_cast<Value>(Instr)] = Combinations;
-  return Combinations;
+	AvailableSolutions[dyn_cast<Value>(Instr)] = Solutions;
+  return Solutions;
 		
 }
 
@@ -1247,7 +1258,10 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
   LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
   LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
   LLVM_DEBUG(dbgs() << "Opc of Node is " << Instr->getOpcode() << "Opc of Node str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
-  for(auto Solution : ExprSolutions){ 
+  for(auto Solution : ExprSolutions){
+		if(Solution->getKind() == WIAK_DROP_EXT ){
+			continue;
+		}	
   // We simply drop the extension and we will later see if it's needed.
     LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n'); 
   	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
