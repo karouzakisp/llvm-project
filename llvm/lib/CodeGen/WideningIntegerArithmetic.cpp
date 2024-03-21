@@ -867,15 +867,17 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   SolutionSet Solutions;
 	SmallVector<Value*, 4> IncomingValues;
 	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
-	
+
+  SmallVector<Value*, 32> Worklist;  
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		IncomingValues.push_back(V);
 		// IF Instr->getblock is the same as V->getBlock then continue 
-		// because 
-		if(IsSolved(V)){
+		// If we have a cycle push it to the workList and continue. 
+		if(IsSolved(V) || !isa<PhiInst>(V) ){
 			continue;
 		}
+    Worklist.push_back(V);
     // TODO check visit_widening here? or visitInstruction is enough?
 		if(auto *VI = dyn_cast<Instruction>(V)){
 			visitInstruction(VI);
