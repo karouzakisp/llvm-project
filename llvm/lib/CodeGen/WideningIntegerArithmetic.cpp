@@ -864,17 +864,23 @@ bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
 		return false;
 	}
 	auto *I = dyn_cast<Instruction>(V);
-  for (Value* V : Instr->operand_values() ){
-		if(isa<PHINode>(V)){
+	if(isa<PhiNode>(I)){
+		return true;
+	}
+  for (Value* VI : Instr->operand_values() ){
+		if(isa<PHINode>(VI)){
 			return true;
 		}
-		if(auto *I = dyn_cast<Instruction>(V)){
+		if(auto *I = dyn_cast<Instruction>(VI)){
 			if(isa<BinaryOperator>(I) || isa<ICmpInst>(I) || 
 					isExtOpcode(I->getOpcode())){
 				return hasPhiInSuccessor(V);
+			}else{
+				return false;
 			}
 		}
-	}		
+	}
+	return false;	
 	
 }
 
@@ -890,13 +896,11 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   SmallVector<Value*, 32> Worklist;  
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
-		IncomingValues.push_back(V);
-		// IF Instr->getblock is the same as V->getBlock then continue 
-		// If we have a cycle push it to the workList and continue. 
-		if(IsSolved(V) || !isa<PhiInst>(V) ){
+		// If we have a cycle push it to the Worklist and continue. 
+		if(hasPhiInSuccessor(V)){
+			Worklist.push_back(V);
 			continue;
 		}
-    Worklist.push_back(V);
     // TODO check visit_widening here? or visitInstruction is enough?
 		if(auto *VI = dyn_cast<Instruction>(V)){
 			visitInstruction(VI);
@@ -904,6 +908,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 		if(auto *CI = dyn_cast<ConstantInt>(V)){
 			visitCONSTANT(CI);
 		}
+		IncomingValues.push_back(V);
 	}
   Value *SelectedValue = IncomingValues[0];
   SmallVector<Value *, 4> ValuesWithout = IncomingValues;
