@@ -859,6 +859,25 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
   return Known.getBitWidth();	 
 }
 
+bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
+	if(!isa<Instruction>(Value)){
+		return false;
+	}
+	auto *I = dyn_cast<Instruction>(V);
+  for (Value* V : Instr->operand_values() ){
+		if(isa<PHINode>(V)){
+			return true;
+		}
+		if(auto *I = dyn_cast<Instruction>(V)){
+			if(isa<BinaryOperator>(I) || isa<ICmpInst>(I) || 
+					isExtOpcode(I->getOpcode())){
+				return hasPhiInSuccessor(V);
+			}
+		}
+	}		
+	
+}
+
 WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	// we know that Instr is PHINode from isPHI method so we can cast it.
