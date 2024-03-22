@@ -169,6 +169,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
     unsigned int RegisterBitWidth = 0; 
+		bool hasPhiInSuccessor(Value *V);
 
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
