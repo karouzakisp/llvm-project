@@ -156,6 +156,8 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
 		SolutionSet visitPHI(Instruction *Instr);
+    SolutionSet solveSimplePhis(Instruction *Instr, SmallVector<Value *, 16>
+        IncomingValues);
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
@@ -861,11 +863,12 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
 }
 
 bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
-	if(!isa<Instruction>(Value)){
+	if(!isa<Instruction>(V)){
 		return false;
 	}
-	auto *I = dyn_cast<Instruction>(V);
-	if(isa<PhiNode>(I)){
+  dbgs() << "Trying to check succ " << "\n";
+	auto *Instr = dyn_cast<Instruction>(V);
+	if(isa<PHINode>(Instr)){
 		return true;
 	}
   for (Value* VI : Instr->operand_values() ){
@@ -874,7 +877,7 @@ bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
 		}
 		if(auto *I = dyn_cast<Instruction>(VI)){
 			if(isa<BinaryOperator>(I) || isa<ICmpInst>(I) || 
-					isExtOpcode(I->getOpcode())){
+				 isa<TruncInst>(I) || isa<ZExtInst>(I) || isa<SExtInst>(I)) {
 				return hasPhiInSuccessor(V);
 			}else{
 				return false;
@@ -885,38 +888,24 @@ bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
 	
 }
 
-WideningIntegerArithmetic::SolutionSet
-WideningIntegerArithmetic::visitPHI(Instruction *Instr){
-	// we know that Instr is PHINode from isPHI method so we can cast it.
-	auto *PhiInst = dyn_cast<PHINode>(Instr);
-	int NumIncValues = PhiInst->getNumIncomingValues();
-  SolutionSet Solutions;
-	SmallVector<Value*, 4> IncomingValues;
-	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
 
-  SmallVector<Value*, 32> Worklist;  
-	for(int i = 0; i < NumIncValues; i++){
-		Value *V = PhiInst->getIncomingValue(i);
-		// If we have a cycle push it to the Worklist and continue. 
-		if(hasPhiInSuccessor(V)){
-			Worklist.push_back(V);
-			continue;
-		}
-    // TODO check visit_widening here? or visitInstruction is enough?
-		if(auto *VI = dyn_cast<Instruction>(V)){
-			visitInstruction(VI);
-		}
-		if(auto *CI = dyn_cast<ConstantInt>(V)){
-			visitCONSTANT(CI);
-		}
-		IncomingValues.push_back(V);
-	}
+WideningIntegerArithmetic::SolutionSet 
+WideningIntegerArithmetic::solveSimplePhis(
+    Instruction *Instr, SmallVector<Value *, 16> IncomingValues){
+  
+	SolutionSet Solutions;
+	auto *PhiInst = dyn_cast<PHINode>(Instr);
+	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
+  if(IncomingValues.size() <= 0){
+    return Solutions;
+  }
   Value *SelectedValue = IncomingValues[0];
-  SmallVector<Value *, 4> ValuesWithout = IncomingValues;
+  SmallVector<Value *, 16> ValuesWithout = IncomingValues;
+  dbgs() << "Test..." << "\n";
 	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
 	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
   ValuesWithout.erase(ValuesWithout.begin());
-	// TODO Solution maybe adds redudant Solutions
+  // TODO Solution maybe adds redudant Solutions
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
     for(Value *Val2 : ValuesWithout){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
@@ -941,7 +930,40 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
   }
 	AvailableSolutions[dyn_cast<Value>(Instr)] = Solutions;
   return Solutions;
-		
+
+}
+
+WideningIntegerArithmetic::SolutionSet
+WideningIntegerArithmetic::visitPHI(Instruction *Instr){
+	// we know that Instr is PHINode from isPHI method so we can cast it.
+	auto *PhiInst = dyn_cast<PHINode>(Instr);
+	int NumIncValues = PhiInst->getNumIncomingValues();
+  SolutionSet Solutions;
+	SmallVector<Value*, 16> IncomingValues;
+
+  SmallVector<Value*, 32> Worklist;
+  dbgs() << "Number of incoming values --> " << NumIncValues << "\n";  
+	for(int i = 0; i < NumIncValues; i++){
+		Value *V = PhiInst->getIncomingValue(i);
+		// If we have a cycle push it to the Worklist and continue. 
+    dbgs() << "Checking phi succ " << "\n";
+		if(hasPhiInSuccessor(V)){
+      dbgs() << "Pushing to the worklist inc " << i <<"\n";
+			Worklist.push_back(V);
+			continue;
+		}
+    else if(auto *I = dyn_cast<Instruction>(V)){
+		 	if(!IsVisited(I) ){	
+        dbgs() << "Solving unvisited instruction " << "\n";
+   	 		visit_widening(I);
+			}
+		}
+    IncomingValues.push_back(V);
+    
+	}
+  dbgs() << "Solving Simple Phis.." << "\n";
+	SolutionSet simpleSols = solveSimplePhis(Instr, IncomingValues);
+  return simpleSols; 
 }
 
 	
