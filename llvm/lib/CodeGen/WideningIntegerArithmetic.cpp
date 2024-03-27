@@ -933,6 +933,20 @@ WideningIntegerArithmetic::solveSimplePhis(
 
 }
 
+void WideningIntegerArithmetic::solveComplexPHIs(Instruction *Instr,
+	SmallVectorImpl<Value *> &Worklist){
+	
+	while(!Worklist.empty()){
+		Value *PopVal = Worklist.pop_back();
+		if(auto *I = dyn_cast<Value>(PopVal)){
+			if(!isa<PHINode>(I)){
+				visitInstruction(I);
+			}
+		}	
+	}
+
+}
+
 WideningIntegerArithmetic::SolutionSet
 WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	// we know that Instr is PHINode from isPHI method so we can cast it.
@@ -963,6 +977,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	}
   dbgs() << "Solving Simple Phis.." << "\n";
 	SolutionSet simpleSols = solveSimplePhis(Instr, IncomingValues);
+	solveComplexPHIs(Instr, Worklist); 
   return simpleSols; 
 }
 
