@@ -158,7 +158,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 		SolutionSet visitPHI(Instruction *Instr);
     bool solveSimplePhis(Instruction *Instr, SmallVector<Value *, 16>
         IncomingValues);
-    void solveComplexPHIs(PHINode *Instr, SmallVector<Value *, 16> &Worklist);
+    void solveComplexPHIs(PHINode *Instr, SmallVector<Value *, 32> &Worklist);
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
@@ -866,30 +866,29 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
   return Known.getBitWidth();	 
 }
 
-bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
+Value* WideningIntegerArithmetic::getPhiSuccessor(Value *V){
 	if(!isa<Instruction>(V)){
-		return false;
+		return nullptr;
 	}
   dbgs() << "Trying to check succ " << "\n";
 	auto *Instr = dyn_cast<Instruction>(V);
 	if(isa<PHINode>(Instr)){
-		return true;
+		return V;
 	}
   for (Value* VI : Instr->operand_values() ){
 		if(isa<PHINode>(VI)){
-			return true;
+			return VI;
 		}
 		if(auto *I = dyn_cast<Instruction>(VI)){
 			if(isa<BinaryOperator>(I) || isa<ICmpInst>(I) || 
 				 isa<TruncInst>(I) || isa<ZExtInst>(I) || isa<SExtInst>(I)) {
-				return hasPhiInSuccessor(V);
+				return getPhiSuccessor(VI);
 			}else{
-				return false;
+				return nullptr;
 			}
 		}
 	}
-	return false;	
-	
+	return nullptr;		
 }
 
 
@@ -979,7 +978,7 @@ WideningIntegerArithmetic::getOrCreateDefaultSol(Instruction *I){
 }
 
 void WideningIntegerArithmetic::solveComplexPHIs(PHINode *Instr,
-	SmallVector<Value *> &Worklist){
+	SmallVector<Value *, 32> &Worklist){
 
   // Worklist contains all incoming values some of them might
   // not be solved yet.
@@ -993,8 +992,17 @@ void WideningIntegerArithmetic::solveComplexPHIs(PHINode *Instr,
 		if(auto *I = dyn_cast<Instruction>(PopVal)){
       // IncomingValues now contain a default Solution
       bool Changed = solveSimplePhis(Instr, IncomingValues);
-      if(Changed){
+      Value *SuccessorPhi = getPhiSuccessor(PopVal);
+      if(Changed ){
         Worklist.push_back(PopVal);
+      }else if(SuccessorPhi != nullptr){
+        Worklist.push_back(PopVal);
+        PHINode *PHI = dyn_cast<PHINode>(SuccessorPhi);
+        SmallVector<Value*, 16> SuccIncValues;
+        for(Value *IncVal : PHI->incoming_values()){
+          SuccInvValues.push_back(IncVal); 
+        }
+        solveComplexPHIs(SuccessorPhi, SuccInvValues); 
       }
     }	
 	}
