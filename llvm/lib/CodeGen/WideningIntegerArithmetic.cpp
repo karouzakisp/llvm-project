@@ -156,7 +156,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
 		SolutionSet visitPHI(Instruction *Instr);
-    bool solveSimplePhis(Instruction *Instr, SmallVector<Value *, 16>
+    bool solveSimplePhis(Instruction *Instr, SmallVector<Value *, 32>
         IncomingValues);
     void solveComplexPHIs(PHINode *Instr, SmallVector<Value *, 32> &Worklist);
 
@@ -172,7 +172,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
     unsigned RegisterBitWidth = 0; 
-		bool hasPhiInSuccessor(Value *V);
+		Value* getPhiSuccessor(Value *V);
 
     BinOpWidth createWidth(unsigned char op1, 
                    unsigned char op2, unsigned dst);
@@ -893,20 +893,18 @@ Value* WideningIntegerArithmetic::getPhiSuccessor(Value *V){
 
 
 bool WideningIntegerArithmetic::solveSimplePhis(
-    Instruction *Instr, SmallVector<Value *, 16> IncomingValues){
+    Instruction *Instr, SmallVector<Value *, 32> IncomingValues){
   
 	SolutionSet Solutions;
+	auto *VInstr = dyn_cast<Value>(Instr);
 	auto *PhiInst = dyn_cast<PHINode>(Instr);
 	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
-  if(IncomingValues.size() <= 0){
+  if(IncomingValues.size() <= 0 || IsSolved(Instr)){
     return false;
   }
   bool Changed = false;
   Value *SelectedValue = IncomingValues[0];
-  SmallVector<Value *, 16> ValuesWithout = IncomingValues;
-  dbgs() << "Test..." << "\n";
-	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
-	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
+  SmallVector<Value *, 32> ValuesWithout = IncomingValues;
   ValuesWithout.erase(ValuesWithout.begin());
   auto Vphi = dyn_cast<Value>(PhiInst);
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
@@ -926,12 +924,15 @@ bool WideningIntegerArithmetic::solveSimplePhis(
 							NewFillType, NewFillTypeWidth, InstrWidth, Sol->getUpdatedWidth(), 
 						 NewCost, Vphi);	
 
-          if(addNonRedudant(AvailableSolutions[Vphi], PhiSol)){
+          if(addNonRedudant(AvailableSolutions[VInstr], PhiSol)){
             Changed = true;
           }
 				}      
 			}
     }
+  }
+  if(!Changed){
+    SolvedInstructions[VInstr] = true; 
   }
   return Changed;
 }
@@ -977,36 +978,45 @@ WideningIntegerArithmetic::getOrCreateDefaultSol(Instruction *I){
   return DefaultSol;
 }
 
-void WideningIntegerArithmetic::solveComplexPHIs(PHINode *Instr,
+void WideningIntegerArithmetic::solveComplexPHIs(PHINode *PhiInstr,
 	SmallVector<Value *, 32> &Worklist){
 
   // Worklist contains all incoming values some of them might
   // not be solved yet.
-  SmallVector<Value*, 16> IncomingValues = Worklist;
-  for(auto IncValue : IncomingValues){
-    if(auto I = dyn_cast<Instruction>(Value))
+  SmallVector<Value*, 32> IncomingValues = Worklist;
+  for(Value *IncValue : IncomingValues){
+    if(auto *I = dyn_cast<Instruction>(IncValue))
       getOrCreateDefaultSol(I);
   } 
 	while(!Worklist.empty()){
+    dbgs() << "Worklist size before pop " << Worklist.size() << "\n";
+    bool LeftOut = true;
 		Value *PopVal = Worklist.pop_back_val();
-		if(auto *I = dyn_cast<Instruction>(PopVal)){
-      // IncomingValues now contain a default Solution
-      bool Changed = solveSimplePhis(Instr, IncomingValues);
-      Value *SuccessorPhi = getPhiSuccessor(PopVal);
-      if(Changed ){
-        Worklist.push_back(PopVal);
-      }else if(SuccessorPhi != nullptr){
-        Worklist.push_back(PopVal);
-        PHINode *PHI = dyn_cast<PHINode>(SuccessorPhi);
-        SmallVector<Value*, 16> SuccIncValues;
-        for(Value *IncVal : PHI->incoming_values()){
-          SuccInvValues.push_back(IncVal); 
-        }
-        solveComplexPHIs(SuccessorPhi, SuccInvValues); 
+    dbgs() << "Worklist size after pop " << Worklist.size() << "\n";
+    // All IncomingValues now contain a default Solution
+    bool Changed = solveSimplePhis(PhiInstr, IncomingValues);
+    if(Changed){
+      Worklist.push_back(PopVal);
+      LeftOut = false;
+      dbgs() << "Adding back to worklist cause of change" << "\n";
+    }
+    Value *SuccessorPhi = getPhiSuccessor(PopVal);
+    if(SuccessorPhi != nullptr && SuccessorPhi != PhiInstr && 
+        !IsSolved(SuccessorPhi) ){
+      dbgs() << "Adding back to worklist cause of successor" << "\n";
+      Worklist.push_back(PopVal);
+      LeftOut = false;
+      PHINode *PHI = dyn_cast<PHINode>(SuccessorPhi);
+      SmallVector<Value*, 32> SuccessorIncValues;
+      for(Value *IncVal : PHI->incoming_values()){
+        SuccessorIncValues.push_back(IncVal); 
       }
-    }	
+      solveComplexPHIs(PHI, SuccessorIncValues); 
+    }
+    if(LeftOut){
+      SolvedInstructions[PopVal] = true; 
+    }  
 	}
-
 }
 
 WideningIntegerArithmetic::SolutionSet
@@ -1015,7 +1025,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	auto *PhiInst = dyn_cast<PHINode>(Instr);
 	int NumIncValues = PhiInst->getNumIncomingValues();
   SolutionSet Solutions;
-	SmallVector<Value*, 16> IncomingValues;
+	SmallVector<Value*, 32> IncomingValues;
 
   SmallVector<Value*, 32> Worklist;
   bool PossibleCycle = false;
@@ -1024,7 +1034,7 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 		Value *V = PhiInst->getIncomingValue(i);
 		// If we have a cycle push it to the Worklist and continue. 
 	  Worklist.push_back(V);
-		if(hasPhiInSuccessor(V)){
+		if(getPhiSuccessor(V) != nullptr){
       PossibleCycle = true;
 			continue;
 		}
