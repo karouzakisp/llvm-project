@@ -156,8 +156,9 @@ class WideningIntegerArithmetic : public FunctionPass {
     SolutionSet visitNATURAL(Instruction *Instr);
     void  			visitCONSTANT(ConstantInt *CI);
 		SolutionSet visitPHI(Instruction *Instr);
-    SolutionSet solveSimplePhis(Instruction *Instr, SmallVector<Value *, 16>
+    bool solveSimplePhis(Instruction *Instr, SmallVector<Value *, 16>
         IncomingValues);
+    void solveComplexPHIs(PHINode *Instr, SmallVector<Value *, 16> &Worklist);
 
 		// Finds all the combinations of the legal 
 		// solutions of all the Users of Instr 
@@ -170,7 +171,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 
     std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
-    unsigned int RegisterBitWidth = 0; 
+    unsigned RegisterBitWidth = 0; 
 		bool hasPhiInSuccessor(Value *V);
 
     BinOpWidth createWidth(unsigned char op1, 
@@ -197,6 +198,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 		bool inline isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
 																	 WideningIntegerSolutionInfo *Sol2);
     bool mayOverflow(Instruction *Instr);
+    WideningIntegerSolutionInfo* getOrCreateDefaultSol(Instruction *I);
 };
 } // end anonymous namespace
 
@@ -538,7 +540,9 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
 	}
 	setFillType((&*(FBB.begin())->getType()));
 	dbgs() << "ExtensionChoice is " << ExtensionChoice << '\n';
-	
+  RegisterBitWidth =
+      TTI->getRegisterBitWidth(TargetTransformInfo::RGK_Scalar)
+      .getFixedValue();	
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
       dbgs() << "InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
@@ -889,23 +893,23 @@ bool WideningIntegerArithmetic::hasPhiInSuccessor(Value *V){
 }
 
 
-WideningIntegerArithmetic::SolutionSet 
-WideningIntegerArithmetic::solveSimplePhis(
+bool WideningIntegerArithmetic::solveSimplePhis(
     Instruction *Instr, SmallVector<Value *, 16> IncomingValues){
   
 	SolutionSet Solutions;
 	auto *PhiInst = dyn_cast<PHINode>(Instr);
 	unsigned int InstrWidth = PhiInst->getType()->getScalarSizeInBits();
   if(IncomingValues.size() <= 0){
-    return Solutions;
+    return false;
   }
+  bool Changed = false;
   Value *SelectedValue = IncomingValues[0];
   SmallVector<Value *, 16> ValuesWithout = IncomingValues;
   dbgs() << "Test..." << "\n";
 	dbgs() << "Incoming Values [0] " << IsSolved(IncomingValues[0]) << "\n";
 	dbgs() << "incoming values size is " << IncomingValues.size() <<'\n';
   ValuesWithout.erase(ValuesWithout.begin());
-  // TODO Solution maybe adds redudant Solutions
+  auto Vphi = dyn_cast<Value>(PhiInst);
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[SelectedValue]){
     for(Value *Val2 : ValuesWithout){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[Val2]){
@@ -921,28 +925,78 @@ WideningIntegerArithmetic::solveSimplePhis(
 															Sol->getCost() : Sol2->getCost();
 					auto PhiSol = new WIA_PHI(PhiInst->getOpcode(), PhiInst->getOpcode(),
 							NewFillType, NewFillTypeWidth, InstrWidth, Sol->getUpdatedWidth(), 
-						 NewCost, dyn_cast<Value>(PhiInst));	
+						 NewCost, Vphi);	
 
-          Solutions.push_back(PhiSol);
+          if(addNonRedudant(AvailableSolutions[Vphi], PhiSol)){
+            Changed = true;
+          }
 				}      
 			}
     }
   }
-	AvailableSolutions[dyn_cast<Value>(Instr)] = Solutions;
-  return Solutions;
-
+  return Changed;
 }
 
-void WideningIntegerArithmetic::solveComplexPHIs(Instruction *Instr,
-	SmallVectorImpl<Value *> &Worklist){
-	
+WideningIntegerSolutionInfo* 
+WideningIntegerArithmetic::getOrCreateDefaultSol(Instruction *I){
+
+  enum WIAKind Kind;
+  unsigned Opcode = I->getOpcode(); 
+  if(auto V = dyn_cast<Value>(I)){
+    if(AvailableSolutions[V].size() > 0)
+      return AvailableSolutions[V][0]; // return the first solution. 
+  }
+  if(IsBinop(Opcode)){
+    Kind = WIAK_BINOP;
+  }
+  else if(IsUnop(Opcode)){
+    Kind = WIAK_UNOP;
+  }
+  else if(IsLoad(Opcode)){
+    Kind = WIAK_LOAD; 
+  }
+  else if(IsStore(Opcode)){
+    Kind = WIAK_STORE; 
+  }
+  else if(IsExtension(Opcode)){
+    Kind = WIAK_DROP_EXT;  
+  }
+  else if(IsTruncate(Opcode)){
+    Kind = WIAK_DROP_LOCOPY;
+    // TODO handle DROPLOIGNORE 
+  }else if(IsPHI(Opcode)){
+    Kind = WIAK_PHI;
+	}else{
+    Kind = WIAK_UNKNOWN;
+  }
+  auto DefaultSol = new WideningIntegerSolutionInfo(Opcode, Opcode,ANYTHING, 
+                RegisterBitWidth, 
+                RegisterBitWidth, /* TODO CHECK */RegisterBitWidth , 
+                0, Kind, I);
+  auto VI = dyn_cast<Value>(I);
+  AvailableSolutions[VI].push_back(DefaultSol);
+  return DefaultSol;
+}
+
+void WideningIntegerArithmetic::solveComplexPHIs(PHINode *Instr,
+	SmallVector<Value *> &Worklist){
+
+  // Worklist contains all incoming values some of them might
+  // not be solved yet.
+  SmallVector<Value*, 16> IncomingValues = Worklist;
+  for(auto IncValue : IncomingValues){
+    if(auto I = dyn_cast<Instruction>(Value))
+      getOrCreateDefaultSol(I);
+  } 
 	while(!Worklist.empty()){
-		Value *PopVal = Worklist.pop_back();
-		if(auto *I = dyn_cast<Value>(PopVal)){
-			if(!isa<PHINode>(I)){
-				visitInstruction(I);
-			}
-		}	
+		Value *PopVal = Worklist.pop_back_val();
+		if(auto *I = dyn_cast<Instruction>(PopVal)){
+      // IncomingValues now contain a default Solution
+      bool Changed = solveSimplePhis(Instr, IncomingValues);
+      if(Changed){
+        Worklist.push_back(PopVal);
+      }
+    }	
 	}
 
 }
@@ -956,14 +1010,14 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
 	SmallVector<Value*, 16> IncomingValues;
 
   SmallVector<Value*, 32> Worklist;
+  bool PossibleCycle = false;
   dbgs() << "Number of incoming values --> " << NumIncValues << "\n";  
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
 		// If we have a cycle push it to the Worklist and continue. 
-    dbgs() << "Checking phi succ " << "\n";
+	  Worklist.push_back(V);
 		if(hasPhiInSuccessor(V)){
-      dbgs() << "Pushing to the worklist inc " << i <<"\n";
-			Worklist.push_back(V);
+      PossibleCycle = true;
 			continue;
 		}
     else if(auto *I = dyn_cast<Instruction>(V)){
@@ -976,9 +1030,11 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
     
 	}
   dbgs() << "Solving Simple Phis.." << "\n";
-	SolutionSet simpleSols = solveSimplePhis(Instr, IncomingValues);
-	solveComplexPHIs(Instr, Worklist); 
-  return simpleSols; 
+	bool Changed = solveSimplePhis(Instr, IncomingValues);
+  if(PossibleCycle)
+	  solveComplexPHIs(PhiInst, Worklist); 
+
+  return AvailableSolutions[PhiInst]; 
 }
 
 	
