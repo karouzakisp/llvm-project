@@ -989,21 +989,17 @@ void WideningIntegerArithmetic::solveComplexPHIs(PHINode *PhiInstr,
       getOrCreateDefaultSol(I);
   } 
 	while(!Worklist.empty()){
-    dbgs() << "Worklist size before pop " << Worklist.size() << "\n";
     bool LeftOut = true;
 		Value *PopVal = Worklist.pop_back_val();
-    dbgs() << "Worklist size after pop " << Worklist.size() << "\n";
     // All IncomingValues now contain a default Solution
     bool Changed = solveSimplePhis(PhiInstr, IncomingValues);
     if(Changed){
       Worklist.push_back(PopVal);
       LeftOut = false;
-      dbgs() << "Adding back to worklist cause of change" << "\n";
     }
     Value *SuccessorPhi = getPhiSuccessor(PopVal);
     if(SuccessorPhi != nullptr && SuccessorPhi != PhiInstr && 
         !IsSolved(SuccessorPhi) ){
-      dbgs() << "Adding back to worklist cause of successor" << "\n";
       Worklist.push_back(PopVal);
       LeftOut = false;
       PHINode *PHI = dyn_cast<PHINode>(SuccessorPhi);
@@ -1047,7 +1043,6 @@ WideningIntegerArithmetic::visitPHI(Instruction *Instr){
     IncomingValues.push_back(V);
     
 	}
-  dbgs() << "Solving Simple Phis.." << "\n";
 	bool Changed = solveSimplePhis(Instr, IncomingValues);
   if(PossibleCycle)
 	  solveComplexPHIs(PhiInst, Worklist); 
