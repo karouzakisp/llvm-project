@@ -355,7 +355,6 @@ SmallVector<WideningIntegerSolutionInfo *>
 WideningIntegerArithmetic::visit_widening(Instruction *Instr){
  	SolutionSet EmptySols;
 	Value *VInstr = dyn_cast<Value>(Instr);
-	dbgs() << "Inside visit_widening Instr Opcode is " << OpcodesToStr[Instr->getOpcode()] << '\n';
 	VisitedInstructions[VInstr] = true;
   if(IsSolved(VInstr) ){
     LLVM_DEBUG(dbgs() << "Opcode str is " << OpcodesToStr[Instr->getOpcode()] << "\n"); 
@@ -380,6 +379,7 @@ WideningIntegerArithmetic::visit_widening(Instruction *Instr){
 	}
   //dbgs() << " Trying to solve Node with Opc Number !! : " << Node->getOpcode() << "str -->  "  << OpcodesToStr[Node->getOpcode()] << "\n";
 	// is ConstantInt visited here?
+	dbgs() << "Inside visit_widening visiting Instr Opcode is " << OpcodesToStr[Instr->getOpcode()] << '\n';
 	auto CalcSolutions = visitInstruction(Instr);	
 	// #TODO to get the opcode need to check and cast to a Instruction
 	//LLVM_DEBUG(dbgs() << " Solved Instruction !! : " << U->getOpcode() << "\n");
@@ -545,11 +545,11 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
       .getFixedValue();	
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
-      dbgs() << "InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
+      dbgs() << "Top level InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
 			Value *VInstr = dyn_cast<Value>(&I);
 			if(IsSolved(VInstr))
 				continue;
-
+			
 			if(isa<IntegerType>(I.getType())) {
 				visit_widening(&I);  
 			}
@@ -902,6 +902,15 @@ bool WideningIntegerArithmetic::solveSimplePhis(
   if(IncomingValues.size() <= 0 || IsSolved(Instr)){
     return false;
   }
+	for(auto *Inc : IncomingValues){
+		if(IsSolved(Inc))
+			continue;
+		if(auto *I = dyn_cast<Instruction>(Inc)){
+			visit_widening(I);
+		}else if(auto *CI = dyn_cast<ConstantInt>(Inc)){
+			visitCONSTANT(CI);
+		}
+	}
   bool Changed = false;
   Value *SelectedValue = IncomingValues[0];
   SmallVector<Value *, 32> ValuesWithout = IncomingValues;
@@ -1082,24 +1091,19 @@ WideningIntegerArithmetic::visitBINOP(Instruction *Binop){
   bool AddedSol = false; 
   // get All the available solutions from the operands // 
 	// TODO how to handle carry and borrow? 
+	/*
   if(!IsSolved(V0)){
-    dbgs() << "Value is not solved ";
-    if(auto *I = dyn_cast<Instruction>(V0)){
-      dbgs() << "Opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
-    }else if(auto *CI = dyn_cast<ConstantInt>(V0)){
-      dbgs() << "Opcode is Constant" << "\n";
-    }
+    dbgs() << "!! Solving Instruction Value is not solved!!";
+		if(auto *I = dyn_cast<Instruction>(V0))
+			dbgs() << " instr opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
     return Sols;
   }
-  if(!IsSolved(V1)){
-    dbgs() << "Value is not solved ";
-    if(auto *I = dyn_cast<Instruction>(V1)){
-      dbgs() << "Opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
-    }else if(auto *CI = dyn_cast<ConstantInt>(V1)){
-      dbgs() << "Opcode is Constant" << "\n";
-    }
+  if(AvailableSolutions[V1].size() <= 0){
+    dbgs() << "!! Solving Instruction 2 Value is not solved!!";
+		if(auto *I = dyn_cast<Instruction>(V1))
+			dbgs() << " instr 2 opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
     return Sols;
-  }
+  }*/
   SmallVector<WideningIntegerSolutionInfo*> LeftSols = 
                                               AvailableSolutions[V0];
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
@@ -1400,7 +1404,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     case Instruction::ZExt: ++NumZExtsDropped; break;
     default: dbgs() << "Check this is not an Instruction!" << '\n';
   }
-  LLVM_DEBUG(dbgs() << "Trying to drop extension in Solutions" << '\n');
+ 	dbgs() << "Trying to drop extension in Solutions" << '\n';
   LLVM_DEBUG(dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n');
   if(Opc >= 0){
     LLVM_DEBUG(dbgs() << "Opc of Instr->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n');
@@ -1415,7 +1419,7 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
 		}	
   // We simply drop the extension and we will later see if it's needed.
     LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n'); 
-  	unsigned char FillTypeWidth = Solution->getFillTypeWidth();  
+  	unsigned char FillTypeWidth = Solution->getFillTypeWidth(); 
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(
         Instr->getOpcode(), Solution->getNewOpcode(), ExtensionChoice, 
         FillTypeWidth, ExtendedWidth /*OldWidth*/, 
@@ -1423,7 +1427,8 @@ WideningIntegerArithmetic::SolutionSet WideningIntegerArithmetic::visitDROP_EXT(
     // TODO check OldWidth must come from The operand of the Extension
     // or from The Solutions? PRobably thes solutions. 
     Expr->setOperands(Solution->getOperands());
-    Sols.push_back(Expr); 
+    Sols.push_back(Expr);
+		dbgs() << "test Kind is " << WIAK_NAMES_VEC[Expr->getKind()] << "\n";
   }
   return Sols; 
 }
