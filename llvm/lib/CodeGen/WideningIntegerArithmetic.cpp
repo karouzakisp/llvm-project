@@ -1087,6 +1087,24 @@ WideningIntegerArithmetic::visitBINOP(Instruction *Binop){
   bool AddedSol = false; 
   // get All the available solutions from the operands // 
 	// TODO how to handle carry and borrow? 
+  if(!IsSolved(V0)){
+    dbgs() << "Value is not solved ";
+    if(auto *I = dyn_cast<Instruction>(V0)){
+      dbgs() << "Opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
+    }else if(auto *CI = dyn_cast<ConstantInt>(V0)){
+      dbgs() << "Opcode is Constant" << "\n";
+    }
+    return Sols;
+  }
+  if(!IsSolved(V1)){
+    dbgs() << "Value is not solved ";
+    if(auto *I = dyn_cast<Instruction>(V1)){
+      dbgs() << "Opcode is " << OpcodesToStr[I->getOpcode()] << "\n";
+    }else if(auto *CI = dyn_cast<ConstantInt>(V1)){
+      dbgs() << "Opcode is Constant" << "\n";
+    }
+    return Sols;
+  }
   SmallVector<WideningIntegerSolutionInfo*> LeftSols = 
                                               AvailableSolutions[V0];
   SmallVector<WideningIntegerSolutionInfo*> RightSols = 
