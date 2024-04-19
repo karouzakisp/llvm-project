@@ -209,7 +209,7 @@ class WideningIntegerArithmetic : public FunctionPass {
 		bool inline isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
 																	 WideningIntegerSolutionInfo *Sol2);
     bool mayOverflow(Instruction *Instr);
-    bool createDefaultSol(Value *VI);
+    bool createDefaultSol(Value *V);
     bool removeFromWorklist(Value *V,  SmallVector<Value*, 32> &Worklist); 
 };
 } // end anonymous namespace
@@ -860,6 +860,7 @@ WideningIntegerArithmetic::visit_widening(Value *VInstr,
   
   while(!Worklist.empty()){
 		Value *PopVal = Worklist.pop_back_val();
+		dbgs() << "Visiting Instr with opc " << OpcodesToStr[Instr->getOpcode()] << "\n";
     bool Changed = visitInstruction(Instr, Worklist);
     Value *SuccessorPhi = getPhiSuccessor(PopVal);
     if( (SuccessorPhi != nullptr && SuccessorPhi != PopVal  && 
@@ -969,8 +970,15 @@ bool WideningIntegerArithmetic::createDefaultSol(Value *VI){
   if(!VI){
     return false;
   }
+	dbgs() << "Before cast " << "\n";
   Instruction *Instr = dyn_cast<Instruction>(VI);
-  unsigned Opcode = Instr->getOpcode(); 
+	if(!Instr && !isa<ConstantInt>(VI)){
+		return false;
+	}else if(auto *CI = dyn_cast<ConstantInt>(VI)){
+		return visitCONSTANT(CI);
+	}
+  unsigned Opcode = Instr->getOpcode();
+ 	dbgs() << "got opc" << "\n";	
   if(IsBinop(Opcode)){
     Kind = WIAK_BINOP;
   }
@@ -994,13 +1002,19 @@ bool WideningIntegerArithmetic::createDefaultSol(Value *VI){
 	}else{
     Kind = WIAK_UNKNOWN;
   }
+	dbgs() << "Before Instr getScalarSizeInBits  " << "\n";
 	unsigned int InstrWidth = Instr->getType()->getScalarSizeInBits();
   unsigned short FillTypeWidth = getKnownFillTypeWidth(Instr); 
+	dbgs() << "After getKnownFillTypeWidth" << "\n";
 
   auto DefaultSol = new WideningIntegerSolutionInfo(Opcode, Opcode,ANYTHING, 
                 FillTypeWidth, InstrWidth, InstrWidth , 
                 0, Kind, VI);
-  return addNonRedudant(AvailableSolutions[VI], DefaultSol);
+	dbgs() << "Calling AddNonRedudant " << "\n";
+  
+	bool Changed = addNonRedudant(AvailableSolutions[VI], DefaultSol);
+	dbgs() << "After AddNonRedudant " << "\n";
+	return Changed;
 }
 
 

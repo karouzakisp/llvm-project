@@ -14,9 +14,9 @@ int main(void){
     for(j = 0; j < 100; j++){
       for(i = 0; i < 1000; i++){
         if( i % 2 == 0){
-          sum += i;
+          sum += i && k;
         }else{
-          sum -= i;
+          sum -= i && (k-j);
         } 
       }
     }
