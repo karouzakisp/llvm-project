@@ -494,7 +494,7 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
   std::queue<Value *> Worklist;  
   for (BasicBlock &BB : F){
 		for(Instruction &I : BB){
-      dbgs() << "Top level InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
+      dbgs() << "==============   InstructionOpcode is  " << OpcodesToStr[I.getOpcode()] << '\n';
 			Value *VInstr = dyn_cast<Value>(&I);
 			if(IsSolved(VInstr))
 				continue;
@@ -663,9 +663,16 @@ bool WideningIntegerArithmetic::visitCONSTANT(ConstantInt *CI){
   SolutionSet Sols;
   unsigned bitWidth = CI->getBitWidth();
 	Value *VCI = dyn_cast<Value>(CI);
-  auto Sol = new WIA_CONSTANT(CONSTANT_INT_OPC, CONSTANT_INT_OPC,
-      ExtensionChoice, bitWidth, RegisterBitWidth, RegisterBitWidth, 0, VCI);
-  return addNonRedudant(AvailableSolutions[VCI], Sol);
+	std::vector<unsigned int> PossibleWidths = {8, 16, 32, 64};
+	bool Changed = false;
+	for(auto Width : PossibleWidths){
+		if(Width >= bitWidth){
+			auto Sol = new WIA_CONSTANT(CONSTANT_INT_OPC, CONSTANT_INT_OPC,
+					ExtensionChoice, bitWidth, Width, Width, 0, VCI);
+			Changed = addNonRedudant(AvailableSolutions[VCI], Sol);
+		}
+	}
+	return Changed;
 }
   
 bool WideningIntegerArithmetic::visitSTORE(Instruction *Instr){
@@ -870,6 +877,8 @@ WideningIntegerArithmetic::visit_widening(Value *VInstr,
         !IsSolved(SuccessorPhi) ) || Changed){
       dbgs() << "Adding PopVal back to worklist.." << "\n";
       dbgs() << "Changed is --> " << Changed << "\n";
+			dbgs() << "Successor Phi is Solved is " << IsSolved(SuccessorPhi) << "\n";
+			dbgs() << "Succesor Phi Sols Size is " << AvailableSolutions[SuccessorPhi].size() << "\n";
       Worklist.push(PopVal);
       dbgs() << "Worklist size is " << Worklist.size() << "\n";
       // visitPHI(SuccessorPhi); // TODO if PHI is not solved solve it here? 
@@ -928,7 +937,7 @@ bool WideningIntegerArithmetic::solveSimplePhis(
 		if(IsSolved(Inc))
 			continue;
     Value *PhiSucc = getPhiSuccessor(Inc);
-    if(PhiSucc != nullptr){
+    if(PhiSucc == PhiInst){
       Worklist.push(Inc);
       continue;
     }
@@ -954,10 +963,12 @@ bool WideningIntegerArithmetic::solveSimplePhis(
 															Sol->getCost() : Sol2->getCost();
 					auto PhiSol = new WIA_PHI(PhiInst->getOpcode(), PhiInst->getOpcode(),
 							NewFillType, NewFillTypeWidth, InstrWidth, Sol->getUpdatedWidth(), 
-						 NewCost, Vphi);	
+						 NewCost, Vphi);
+						
 
           if(addNonRedudant(AvailableSolutions[VInstr], PhiSol)){
             Changed = true;
+						dbgs() << "Inside phiSimple Added new Sol PHI " << *PhiSol << "\n";
           }
 				}      
 			}
@@ -1009,12 +1020,10 @@ bool WideningIntegerArithmetic::createDefaultSol(Value *VI){
 	}else{
     Kind = WIAK_UNKNOWN;
   }
-	dbgs() << "Before Instr getScalarSizeInBits  " << "\n";
 	unsigned int InstrWidth = Instr->getType()->getScalarSizeInBits();
   unsigned short FillTypeWidth = getKnownFillTypeWidth(Instr); 
-	dbgs() << "After getKnownFillTypeWidth" << "\n";
-
-  auto DefaultSol = new WideningIntegerSolutionInfo(Opcode, Opcode,ANYTHING, 
+	dbgs() << "Creating Default Sol for Opc " << OpcodesToStr[Opcode] << "\n";
+  auto DefaultSol = new WideningIntegerSolutionInfo(Opcode, Opcode, ExtensionChoice, 
                 FillTypeWidth, InstrWidth, InstrWidth , 
                 0, Kind, VI);
   // createDefaultSol is called only when we have emptySols so we don't need
@@ -1037,7 +1046,11 @@ bool WideningIntegerArithmetic::visitPHI(Instruction *Instr,
   bool UpdatedWorklist = false, Cycle = false; 
 	for(int i = 0; i < NumIncValues; i++){
 		Value *V = PhiInst->getIncomingValue(i);
-    if(AvailableSolutions[V].size() == 0 ){ 
+    if(AvailableSolutions[V].size() == 0 ){
+		 	dbgs() << "Calling create default sol,  ";	
+			if(auto I = dyn_cast<Instruction>(V)){
+				dbgs() << "Opc is --> " << OpcodesToStr[I->getOpcode()] << "\n";
+			}
       createDefaultSol(V);
       Worklist.push(V);
       UpdatedWorklist = true;
@@ -1055,6 +1068,8 @@ bool WideningIntegerArithmetic::visitPHI(Instruction *Instr,
     IncomingValues.push_back(V); 
 	}
 	bool Changed = solveSimplePhis(Instr, IncomingValues, Worklist);
+	dbgs() << "Changed is --> " << Changed << "\n";
+	dbgs() << "UpdatedWorklist is --> " << UpdatedWorklist << "\n";
   if( (Changed && Cycle ) || (Changed && UpdatedWorklist))
     return true; 
   return false;
@@ -1100,12 +1115,16 @@ bool WideningIntegerArithmetic::combineBINOPSols(Instruction *Binop,
       auto leftFill = leftSolution->getFillType();
       auto rightFill = rightSolution->getFillType();
       dbgs() << "Left Fill type is " << leftFill << "\n";
+			dbgs() << "Left Sol opc is " << OpcodesToStr[leftSolution->getNewOpcode()];
       dbgs() << "right Fill type is " << rightFill << "\n";
+			dbgs() << "right Sol opc is " << OpcodesToStr[rightSolution->getNewOpcode()];
       auto FillType = getOrNullFillType((OperandFillTypes),
                                   leftSolution->getFillType(),
                                   rightSolution->getFillType());
       if(FillType == UNDEFINED){
         dbgs() << "Fill type is undefined skipping solution" << "\n";
+        dbgs() << "Left Solution --> " << *leftSolution << '\n';
+        dbgs() << "Right Solution --> " << *rightSolution << '\n';
         continue;
       }
       //dbgs() << "Passed FillType for combination --> " << FillType << "\n";
@@ -1160,6 +1179,8 @@ bool WideningIntegerArithmetic::combineBINOPSols(Instruction *Binop,
   if(Changed)
     return tryClosure(Binop, Worklist, Changed);
   else if(AvailableSolutions[VBinop].size() == 0){
+		dbgs() << "We didn't find a Solution for binop with opc " << OpcodesToStr[Opcode] << "\n";
+		dbgs() << "So we generate only the default.\n";
     createDefaultSol(VBinop);
   }
   return false; 
@@ -1437,12 +1458,12 @@ bool WideningIntegerArithmetic::visitDROP_EXT(
   LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
   LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
   LLVM_DEBUG(dbgs() << "Opc of Node is " << Instr->getOpcode() << "Opc of Node str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
-  Value *VInstr = dyn_cast<Value>(Instr);
   if(ExprSolutions.size() <= 0){
-    createDefaultSol(VInstr);
-    Worklist.push(VInstr);
+    createDefaultSol(N0);
+    Worklist.push(N0);
   }
   bool Changed = false;
+  Value *VInstr = dyn_cast<Value>(Instr);
   for(auto Solution : ExprSolutions){
 		if(Solution->getKind() == WIAK_DROP_EXT ){
 			continue;
