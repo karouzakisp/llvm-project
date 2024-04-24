@@ -2,6 +2,7 @@
 #define LLVM_CODEGEN_WIDENINGINTEGERARITHMETICINFO_H
 
 #include <iostream>
+#include <queue>
 #include "llvm/IR/Value.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
