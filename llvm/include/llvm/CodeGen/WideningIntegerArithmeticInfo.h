@@ -82,8 +82,8 @@ class Value;
 		"ShuffleVector",
 		"ExtractValue",
 		"InsertValue",
+		"FillInst",
 		"ConstantInt",
-		"FillInst"
 	};
 
 
@@ -293,7 +293,7 @@ public:
       return -1;
     }
 
-    if(n1 >= n2  && c1 >= c2 )
+    if(n1 >= n2  && c1 > c2 )
       return 1;
     if(n2 >= n1 && c2 >= c1 )
       return -1;
