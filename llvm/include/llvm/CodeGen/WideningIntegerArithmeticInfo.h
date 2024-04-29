@@ -15,6 +15,7 @@ namespace llvm {
 
 class Value;
 
+<<<<<<< HEAD
 std::string OpcodesToStr[69] = {
     "Empty Instr",
     "Return",
@@ -85,6 +86,89 @@ std::string OpcodesToStr[69] = {
     "FillInst",
     "ConstantInt",
     "UnknownOpc",
+=======
+
+  std::string OpcodesToStr[69] = {
+  	"Empty Instr",
+		"Return",
+		"BranchInst",
+		"SwitchInst",
+		"IndirectBranch",
+		"InvokeInst",
+		"ResumeInst",
+		"UnreachableInst",
+		"CleanupReturnInst",
+		"CatchReturnInst",
+		"CatchSwitchInst",
+		"CallBrInst",// A call-site terminator ",
+		"UnaryOperator",
+		"Add",
+		"FAdd",
+		"Sub",
+		"FSub",
+		"Mul",
+		"FMul",
+		"UDiv",
+		"SDiv",
+		"FDiv",
+		"URem",
+		"SRem",
+		"FRem",
+		"Shl",
+		"LShr",
+		"AShr",
+		"And",
+		"Or",
+		"Xor",
+		"Alloca",
+		"Load",
+		"Store",
+		"GetElementPtr",
+		"Fence",
+		"AtomicCmpXchg",
+		"AtomicRMW",
+		"Trunc",
+		"ZExt",
+		"SExt",
+		"FPToUI",
+		"FPToSI",
+		"UIToFP",
+		"SIToFP",
+		"FPTrunc",
+		"FPExt",
+		"PtrToInt",
+		"IntToPtr",
+		"BitCast",
+		"AddrSpaceCast",
+		"CleanupPad",
+		"CatchPad",
+		"ICmp",
+		"FCmp",
+		"PHI",
+		"Call",
+		"Select",
+		"UserOp1",
+		"UserOp2",
+		"VAArg",
+		"ExtractElement",
+		"InsertElement",
+		"ShuffleVector",
+		"ExtractValue",
+		"InsertValue",
+		"FillInst",
+		"ConstantInt",
+		"UnknownOpc", 
+	};
+
+
+
+
+enum IntegerFillType{
+  SIGN = 0,
+  ZEROS,
+  ANYTHING,
+  UNDEFINED
+>>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
 };
 
 enum IntegerFillType { SIGN = 0, ZEROS, ANYTHING, UNDEFINED };

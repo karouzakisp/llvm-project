@@ -1573,7 +1573,10 @@ bool WideningIntegerArithmetic::applyChain(
             
         }else{ 
           auto ZExt = new ZExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+<<<<<<< HEAD
           dbgs() << "Inserted ZExt, Trying to replaceAllUses...";
+=======
+>>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
           VComb->replaceAllUsesWith(ZExt); // TODO check if it's needed.
         }
         break;
@@ -1581,7 +1584,10 @@ bool WideningIntegerArithmetic::applyChain(
       case WIAK_NARROW:{
         auto Trunc = new TruncInst(NewV, NewTy, VComb->getName() + "." + 
 						std::to_string(NVTBits), NewVI);
+<<<<<<< HEAD
         dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
+=======
+>>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
         VComb->replaceAllUsesWith(Trunc); // TODO check if it's needed.
         break;
       }
@@ -1593,6 +1599,7 @@ bool WideningIntegerArithmetic::applyChain(
 						search != BestSolsUsersCombination.end()){
 					Value *N0 = search->first;
 					WideningIntegerSolutionInfo *BestSol = search->second;
+<<<<<<< HEAD
           dbgs() << "Applying best Sol --> " << *BestSol << "\n";
           dbgs() << "While droping oldSol --> " << *Sol << "\n";
           dbgs() << "Mutating Type..1\n";
@@ -1617,6 +1624,18 @@ bool WideningIntegerArithmetic::applyChain(
 					NewVI->replaceAllUsesWith(N0);
 
           dbgs() << "Erasing from Parent..2\n";
+=======
+					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+					NewVI->replaceAllUsesWith(N0);
+					NewVI->eraseFromParent(); 
+				}else{
+					dbgs() << "!!!Error here this is not supposed to happen.\n";
+					dbgs() << " sols Size of op0 is " << AvailableSolutions[NewVI->getOperand(0)].size() << "\n";
+					Value *N0 = NewVI->getOperand(0);	
+					WideningIntegerSolutionInfo *BestSol = AvailableSolutions[NewVI->getOperand(0)][0];
+					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+					NewVI->replaceAllUsesWith(N0);
+>>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
 					NewVI->eraseFromParent(); 		
 				}
         break;
