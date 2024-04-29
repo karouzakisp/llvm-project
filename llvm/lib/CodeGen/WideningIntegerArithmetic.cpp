@@ -1,5 +1,7 @@
-
-//
+/* Sign Extension Optimizations for the LLVM Compiler.
+ * Proposed by Panagiotis Karouzakis (karouzakis@ics.forth.gr)
+ *
+ * */
 
 
 
@@ -202,13 +204,12 @@ class WideningIntegerArithmetic : public FunctionPass {
     void initOperatorsFillTypes();
     void printInstrSols(SolutionSet Sols);
     inline Type* getTypeFromInteger(int Integer);
-    inline short int getKnownFillTypeWidth(Instruction *Instr);
+    inline short int getKnownFillTypeWidth(Value *V);
 
 		bool inline isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
 																	 WideningIntegerSolutionInfo *Sol2);
     bool mayOverflow(Instruction *Instr);
     bool createDefaultSol(Value *V);
-    void addExtension(Value *V, Type *NewTy);
 };
 } // end anonymous namespace
 
@@ -365,13 +366,16 @@ bool WideningIntegerArithmetic::visitInstruction(Value *VI,
 
     dbgs() << "This is not an unknown Value ";
     if(auto I = dyn_cast<Instruction>(VI)){
-      assert(0 && "Fix error on ifs..");
+      assert(0 && "Fix error on ifs.. ");
     }
+		dbgs() << "Careful here Adding Default value" << "\n";
+  	int FillTypeWidth = getKnownFillTypeWidth(VI);
     auto Sol = new WideningIntegerSolutionInfo(0, 0,ANYTHING, 
-                  RegisterBitWidth, 
+                  FillTypeWidth, 
                   RegisterBitWidth, /* TODO CHECK */RegisterBitWidth , 
                   0, WIAK_UNKNOWN, Instr);
       Changed = addNonRedudant(AvailableSolutions[VI], Sol);
+		dbgs() << "Adding Default value Succedded is " << Changed << "\n";
   }
     
   // TODO check if we are missing opcodes here, need to add them. 
@@ -507,7 +511,19 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F){
       dbgs() << "---------------------------------------------------------" << '\n';
 		} 
   }
-	return false;
+
+	bool Changed = false; 
+	dbgs() << "Applying Solutions ...\n";
+	for (BasicBlock &BB : F){
+		for(Instruction &I : BB){
+			auto UsersBestSols = getAllUsersLegalSolutions(&I);
+			bool ChangedOnce = applyChain(UsersBestSols);
+			if(ChangedOnce){
+				Changed = true;
+			}
+		}
+	}
+	return Changed;
 } 
 INITIALIZE_PASS_BEGIN(WideningIntegerArithmetic, DEBUG_TYPE,
                       PASS_NAME, false, false)
@@ -781,16 +797,21 @@ WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr){
   for(auto &Use : Instr->uses()){
     Value *VUser1 = Use.getUser();
     VUsers.push_back(VUser1);
+		dbgs() << "Added User --> " << VUser1 << "\n";
   }
+	dbgs() << "VUSers size is " << VUsers.size();
   Value *VUser = VUsers[0];
-  SmallVector<Value *, 4> Users_without = VUsers;
-  auto UserPos = std::find(VUsers.begin(), VUsers.end(), VUser);
-  Users_without.erase(UserPos);
+  SmallVector<Value *, 4> UsersWithout = VUsers;
+  UsersWithout.erase(UsersWithout.begin());
   for(WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]){
     bool all_matching = true;
 		DenseMap<Value *, WideningIntegerSolutionInfo *> OneCombination;
 		OneCombination[VUser] = Sol;
-    for(Value *VUser2 : Users_without){
+		if(UsersWithout.size() == 0){
+			Combinations.push_back(OneCombination);
+			continue;
+		}
+    for(Value *VUser2 : UsersWithout){
       for(WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]){
         if(isLegalAndMatching(Sol, Sol2)){
 					OneCombination[VUser2] = Sol2;	
@@ -821,11 +842,7 @@ WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr){
 
 
 inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
-		Instruction *Instr){
-	if(!isa<Value>(Instr)){
-		return -1;
-	}	
-	Value *V = dyn_cast<Value>(Instr);
+		Value *V){
 	KnownBits Known = computeKnownBits(V, *DL);
 	if(Known.isUnknown()){
     // Assume that the data is equal to the instruction width
@@ -833,7 +850,7 @@ inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(
     // otherwise this is wrong. 
     // The overflow checks is done for all the Operators that
     // can overflow such as add, sub.
-    return Instr->getType()->getScalarSizeInBits(); 
+    return V->getType()->getScalarSizeInBits(); 
   }
   return Known.getBitWidth();	 
 }
@@ -873,7 +890,7 @@ WideningIntegerArithmetic::visit_widening(Value *VInstr,
 		dbgs() << "empty Sols check........!!!!!!!!!!!!!!!!" << '\n';
 		return EmptySols;
 	}
-  dbgs() << " Trying to solve Node with Opc Number !! : " << Instr->getOpcode() << "str -->  "  << OpcodesToStr[Instr->getOpcode()] << "\n";
+  dbgs() << " Trying to Instr with opc str -->  "  << OpcodesToStr[Instr->getOpcode()] << " Name is " << Instr->getName() << "\n";
 	// is ConstantInt visited here?
 	dbgs() << "Inside visit_widening visiting Instr Opcode is " << OpcodesToStr[Instr->getOpcode()] << '\n';
   
@@ -1000,40 +1017,45 @@ bool WideningIntegerArithmetic::createDefaultSol(Value *VI){
     return false;
   }
 	dbgs() << "Before cast " << "\n";
-  Instruction *Instr = dyn_cast<Instruction>(VI);
-	if(!Instr && !isa<ConstantInt>(VI)){
-		return false;
-	}else if(auto *CI = dyn_cast<ConstantInt>(VI)){
+	if(auto *CI = dyn_cast<ConstantInt>(VI)){
 		return visitCONSTANT(CI);
 	}
-  unsigned Opcode = Instr->getOpcode();
- 	dbgs() << "got opc" << "\n";	
-  if(IsBinop(Opcode)){
-    Kind = WIAK_BINOP;
-  }
-  else if(IsUnop(Opcode)){
-    Kind = WIAK_UNOP;
-  }
-  else if(IsLoad(Opcode)){
-    Kind = WIAK_LOAD; 
-  }
-  else if(IsStore(Opcode)){
-    Kind = WIAK_STORE; 
-  }
-  else if(IsExtension(Opcode)){
-    Kind = WIAK_DROP_EXT;  
-  }
-  else if(IsTruncate(Opcode)){
-    Kind = WIAK_DROP_LOCOPY;
-    // TODO handle DROPLOIGNORE 
-  }else if(IsPHI(Opcode)){
-    Kind = WIAK_PHI;
+	unsigned Opcode;
+	if(auto *Instr = dyn_cast<Instruction>(VI)){
+		Opcode = Instr->getOpcode();
+		dbgs() << "got opc" << "\n";	
+		if(IsBinop(Opcode)){
+			Kind = WIAK_BINOP;
+		}
+		else if(IsUnop(Opcode)){
+			Kind = WIAK_UNOP;
+		}
+		else if(IsLoad(Opcode)){
+			Kind = WIAK_LOAD; 
+		}
+		else if(IsStore(Opcode)){
+			Kind = WIAK_STORE; 
+		}
+		else if(IsExtension(Opcode)){
+			Kind = WIAK_DROP_EXT;
+		 	return false; // TODO refactor	
+		}
+		else if(IsTruncate(Opcode)){
+			return false;
+			Kind = WIAK_DROP_LOCOPY;
+			// TODO handle DROPLOIGNORE 
+		}else if(IsPHI(Opcode)){
+			Kind = WIAK_PHI;
+		}	
 	}else{
-    Kind = WIAK_UNKNOWN;
-  }
-	unsigned int InstrWidth = Instr->getType()->getScalarSizeInBits();
-  unsigned short FillTypeWidth = getKnownFillTypeWidth(Instr); 
+		Kind = WIAK_UNKNOWN;
+	}
+  unsigned short FillTypeWidth = getKnownFillTypeWidth(VI); 
+	unsigned int InstrWidth = VI->getType()->getScalarSizeInBits();
 	dbgs() << "Creating Default Sol for Opc " << OpcodesToStr[Opcode] << "\n";
+	if(Kind == WIAK_UNKNOWN){
+		Opcode = UNKNOWN_OPC; 
+	}
   auto DefaultSol = new WideningIntegerSolutionInfo(Opcode, Opcode, ExtensionChoice, 
                 FillTypeWidth, InstrWidth, InstrWidth , 
                 0, Kind, VI);
@@ -1441,9 +1463,10 @@ bool WideningIntegerArithmetic::visitDROP_EXT(
   Value *N0 = Instr->getOperand(0);
 	// TODO check can an operand of constantInt be extended?
 	// does it need to be extended? or we can be sure that N0 is never a ConstantInt? 
-  unsigned char ExtendedWidth = Instr->getType()->getScalarSizeInBits();
-  unsigned char OldWidth = N0->getType()->getScalarSizeInBits();  
-  SolutionSet ExprSolutions = AvailableSolutions[N0];
+  unsigned int ExtendedWidth = Instr->getType()->getScalarSizeInBits();
+  unsigned int OldWidth = N0->getType()->getScalarSizeInBits();  
+  dbgs() << "NewWidth of Node is " << OldWidth << '\n';
+	dbgs() << "N0 name is " << N0->getName() << "\n";
   int Opc;
   if(auto Iop = dyn_cast<Instruction>(N0)){
     Opc = TLI->InstructionOpcodeToISD(Iop->getOpcode());
@@ -1460,22 +1483,26 @@ bool WideningIntegerArithmetic::visitDROP_EXT(
     return false;
   }
  	dbgs() << "Trying to drop extension in Solutions" << '\n';
-  LLVM_DEBUG(dbgs() << "Expr Solutions Size is " << ExprSolutions.size() << '\n');
   if(Opc >= 0){
     LLVM_DEBUG(dbgs() << "Opc of Instr->Op0 is " << Opc << " Opc string is " << OpcodesToStr[Opc] << '\n');
   }
   LLVM_DEBUG(dbgs() << "Opc of Instr is " << Instr->getOpcode() << "Opc of Instr str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
   LLVM_DEBUG(dbgs() << "ExtendedWidth of Node is " << ExtendedWidth << '\n');
-  LLVM_DEBUG(dbgs() << "NewWidth of Node is " << OldWidth << '\n');
   LLVM_DEBUG(dbgs() << "Opc of Node is " << Instr->getOpcode() << "Opc of Node str is " << OpcodesToStr[Instr->getOpcode()] << '\n');
-  if(ExprSolutions.size() <= 0){
+  if(AvailableSolutions[N0].size() <= 0){
     createDefaultSol(N0);
     Worklist.push(N0);
+		dbgs() << "Creating default sol .." << "\n";
   }
   bool Changed = false;
   Value *VInstr = dyn_cast<Value>(Instr);
+  dbgs() << "Expr Solutions Size is " << AvailableSolutions[N0].size() << '\n';
+  SolutionSet ExprSolutions = AvailableSolutions[N0];
   for(auto Solution : ExprSolutions){
+		dbgs() << "Sol is " << *Solution << "\n";
 		if(Solution->getKind() == WIAK_DROP_EXT ){
+			dbgs() << "Skipping Sol " << "\n";
+			dbgs() << "Sol is " << *Solution << "\n";
 			continue;
 		}	
   // We simply drop the extension and we will later see if it's needed.
@@ -1488,8 +1515,18 @@ bool WideningIntegerArithmetic::visitDROP_EXT(
     // TODO check OldWidth must come from The operand of the Extension
     // or from The Solutions? PRobably thes solutions. 
     Expr->setOperands(Solution->getOperands());
-    if(addNonRedudant(AvailableSolutions[VInstr], Expr)){
+		dbgs() << "Trying to add Sol " << *Expr << "\n";
+		dbgs() << "Size is " << AvailableSolutions[VInstr].size() << "\n";
+		dbgs() << "Solutions before \n";
+		printInstrSols(AvailableSolutions[VInstr]);
+		int y = addNonRedudant(AvailableSolutions[VInstr], Expr);
+		dbgs() << "Solutions after \n";
+		printInstrSols(AvailableSolutions[VInstr]);
+		dbgs() << "Updated Size is " << AvailableSolutions[VInstr].size() << "\n";
+		dbgs() << "Ret add non Red is " << y << "\n";
+    if(y){
       Changed = true;
+			dbgs() << "Added Sol " << *Expr << "\n";
     }
 		dbgs() << "test Kind is " << WIAK_NAMES_VEC[Expr->getKind()] << "\n";
   }
@@ -1505,12 +1542,14 @@ bool WideningIntegerArithmetic::applyChain(
 		Value *VComb = Combination.first;
 		WideningIntegerSolutionInfo *Sol = Combination.second;
 		if(Sol->getKind() == WIAK_UNKNOWN){
-			dbgs() << "Best solution has Unknown kind..cannot apply it yet, ";
+			dbgs() << "!!!!!!Best solution has Unknown kind..cannot apply it yet, ";
 			if(auto *I = dyn_cast<Instruction>(VComb)){
 				dbgs() << "Opcode is " << I->getOpcode() << '\n';
 			}
-			if(isa<ConstantInt>(VComb)){
+			else if(isa<ConstantInt>(VComb)){
 				dbgs() << "Opcode is Constant" << '\n';
+			}else{
+				dbgs() << "We don't know the opcode .. name is " << VComb->getName() << "\n";
 			}
 			return Changed;
 		}
@@ -1529,27 +1568,60 @@ bool WideningIntegerArithmetic::applyChain(
       case WIAK_WIDEN_GARBAGE:{
         if(ExtensionChoice == SIGN){
           auto SExt = new SExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+          dbgs() << "Inserted SExt, Trying to replaceAllUses...";
           VComb->replaceAllUsesWith(SExt); // TODO check if it's needed
             
         }else{ 
-          auto ZExt = new SExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+          auto ZExt = new ZExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+          dbgs() << "Inserted ZExt, Trying to replaceAllUses...";
           VComb->replaceAllUsesWith(ZExt); // TODO check if it's needed.
         }
         break;
       }
       case WIAK_NARROW:{
-        auto Trunc = new TruncInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+        auto Trunc = new TruncInst(NewV, NewTy, VComb->getName() + "." + 
+						std::to_string(NVTBits), NewVI);
+        dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
         VComb->replaceAllUsesWith(Trunc); // TODO check if it's needed.
         break;
       }
       case WIAK_DROP_EXT:
       case WIAK_DROP_LOCOPY:
       case WIAK_DROP_LOIGNORE:{
-        NewVI->eraseFromParent(); 
+				// TODO Check if the first Operand is always a User? 
+				if(auto search = BestSolsUsersCombination.find(NewVI->getOperand(0)); 
+						search != BestSolsUsersCombination.end()){
+					Value *N0 = search->first;
+					WideningIntegerSolutionInfo *BestSol = search->second;
+          dbgs() << "Applying best Sol --> " << *BestSol << "\n";
+          dbgs() << "While droping oldSol --> " << *Sol << "\n";
+          dbgs() << "Mutating Type..1\n";
+					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+          dbgs() << "Replacing All Uses1\n";
+					NewVI->replaceAllUsesWith(N0);
+          dbgs() << "Erasing from Parent1\n";
+					NewVI->eraseFromParent(); 
+				}else{
+          // Droping extension. 
+					dbgs() << " sols Size of op0 is " << AvailableSolutions[NewVI->getOperand(0)].size() << "\n";
+					Value *N0 = NewVI->getOperand(0);	
+					WideningIntegerSolutionInfo *BestSol = AvailableSolutions[NewVI->getOperand(0)][0];
+          dbgs() << "NewVI type is " << NewVI->getType()->getTypeID() << "\n";
+          dbgs() << "new type N0 is " << N0->getType()->getTypeID() << "\n";
+          dbgs() << "Mutating Type..2\n";
+          dbgs() << "Applying best Sol --> " << *BestSol << "\n";
+          dbgs() << "While droping oldSol --> " << *Sol << "\n";
+					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+          dbgs() << "UpdatedWidth is " << BestSol->getUpdatedWidth() << "\n";
+          dbgs() << "Replacing All Uses2\n";
+					NewVI->replaceAllUsesWith(N0);
+
+          dbgs() << "Erasing from Parent..2\n";
+					NewVI->eraseFromParent(); 		
+				}
         break;
       default:
-        NewV->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
-        VComb->replaceAllUsesWith(NewV);
+        VComb->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
         break;
       }
     }
