@@ -11,11 +11,12 @@ namespace llvm {
 
 #define CONSTANT_INT_OPC 67
 #define FILL_INST_OPC 68
+#define UNKNOWN_OPC 69
 
 class Value;
 
 
-  std::string OpcodesToStr[68] = {
+  std::string OpcodesToStr[69] = {
   	"Empty Instr",
 		"Return",
 		"BranchInst",
@@ -84,6 +85,7 @@ class Value;
 		"InsertValue",
 		"FillInst",
 		"ConstantInt",
+		"UnknownOpc", 
 	};
 
 
