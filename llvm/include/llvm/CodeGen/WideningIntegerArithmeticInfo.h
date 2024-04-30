@@ -754,6 +754,7 @@ public:
             Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
             UpdatedWidth_, Cost_, WIAK_RET, V_) {}
 
+<<<<<<< HEAD
   static inline bool classof(WIA_RET const *) { return true; }
   static inline bool classof(WideningIntegerSolutionInfo const *Base) {
     switch (Base->getKind()) {
@@ -763,6 +764,29 @@ public:
       return false;
     }
   }
+=======
+class WIA_RET : public WideningIntegerSolutionInfo
+{
+  public:
+  WIA_RET() {}
+  ~WIA_RET() {}
+  WIA_RET(unsigned Opcode_, unsigned NewOpcode_, 
+            IntegerFillType FillType_, unsigned short FillTypeWidth_,
+            unsigned short Width_, unsigned short UpdatedWidth_, 
+            short int Cost_, Value *V_): 
+      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+        Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_, 
+        UpdatedWidth_, Cost_, WIAK_RET, V_) {}
+
+  static inline bool classof(WIA_RET const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base){
+    switch(Base->getKind()){
+      case WIAK_RET: return true;
+      default: return false;
+    } 
+  }
+  
+>>>>>>> 93cbdd262740 ([llvm][CodeGen] added visitRET)
 };
 
 } // namespace llvm
