@@ -147,6 +147,7 @@ class WideningIntegerArithmetic : public FunctionPass {
     bool visitLOAD(Instruction *Instr);
     bool visitSTORE(Instruction *Instr);
     bool visitUNOP(Instruction *Instr);
+    bool visitRETURN(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> visitFILL(
         Instruction *Instr, std::queue<Value *> &Worklist);
 		std::list<WideningIntegerSolutionInfo*> 
@@ -672,6 +673,32 @@ WideningIntegerArithmetic::visitUNOP(Instruction *Instr){
 
 */
 
+bool WideningIntegerArithmetic::visitRETURN(Instruction *Instr){
+  bool Changed = false;
+  Value *N0 = Instr->getOperand(0);
+  unsigned Opcode = Instr->getOpcode();
+  Value *VI = dyn_cast<Value>(Instr);
+  // Available Solutions of child 
+  SolutionSet Sols = AvailableSolutions[N0];
+  for(WideningIntegerSolutionInfo *Sol : Sols){
+    auto *SolI = dyn_cast<Instruction>(Sol->getValue());
+    auto AvailableFillTypes = getFillTypes(SolI);
+    for(auto SolFillType : AvailableFillTypes){
+      IntegerFillType FillType = std::get<2>(SolFillType);
+      unsigned char w1 = Sol->getUpdatedWidth();
+      EVT NewVT = EVT::getIntegerVT(*Ctx, w1); 
+      if(!TLI->isOperationLegal(Opcode, NewVT))
+        continue;
+      unsigned char FillTypeWidth = Sol->getFillTypeWidth();
+      auto RetSol = new WIA_RET(Instr->getOpcode(), Instr->getOpcode(), 
+          FillType, FillTypeWidth, w1, w1 , Sol->getCost(), VI); 
+      RetSol->addOperand(RetSol); 
+      AvailableSolutions[VI].push_back(RetSol);
+      Changed = true; 
+    }
+  }
+  return Changed;
+}
 
 /* Add an extension based on the target before Value V */
 
@@ -888,7 +915,7 @@ WideningIntegerArithmetic::visit_widening(Value *VInstr,
 		dbgs() << "empty Sols check........!!!!!!!!!!!!!!!!" << '\n';
 		return EmptySols;
 	}
-  dbgs() << " Trying to solve Node with Opc Number !! : " << Instr->getOpcode() << "str -->  "  << OpcodesToStr[Instr->getOpcode()] << "\n";
+  dbgs() << " Trying to Instr with opc str -->  "  << OpcodesToStr[Instr->getOpcode()] << " Name is " << Instr->getName() << "\n";
 	// is ConstantInt visited here?
 	dbgs() << "Inside visit_widening visiting Instr Opcode is " << OpcodesToStr[Instr->getOpcode()] << '\n';
   
@@ -1566,10 +1593,12 @@ bool WideningIntegerArithmetic::applyChain(
       case WIAK_WIDEN_GARBAGE:{
         if(ExtensionChoice == SIGN){
           auto SExt = new SExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+          dbgs() << "Inserted SExt, Trying to replaceAllUses...";
           VComb->replaceAllUsesWith(SExt); // TODO check if it's needed
             
         }else{ 
           auto ZExt = new ZExtInst(NewV, NewTy, VComb->getName() + std::to_string(NVTBits), NewVI);
+          dbgs() << "Inserted ZExt, Trying to replaceAllUses...";
           VComb->replaceAllUsesWith(ZExt); // TODO check if it's needed.
         }
         break;
@@ -1577,6 +1606,7 @@ bool WideningIntegerArithmetic::applyChain(
       case WIAK_NARROW:{
         auto Trunc = new TruncInst(NewV, NewTy, VComb->getName() + "." + 
 						std::to_string(NVTBits), NewVI);
+        dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
         VComb->replaceAllUsesWith(Trunc); // TODO check if it's needed.
         break;
       }
@@ -1588,16 +1618,30 @@ bool WideningIntegerArithmetic::applyChain(
 						search != BestSolsUsersCombination.end()){
 					Value *N0 = search->first;
 					WideningIntegerSolutionInfo *BestSol = search->second;
+          dbgs() << "Applying best Sol --> " << *BestSol << "\n";
+          dbgs() << "While droping oldSol --> " << *Sol << "\n";
+          dbgs() << "Mutating Type..1\n";
 					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+          dbgs() << "Replacing All Uses1\n";
 					NewVI->replaceAllUsesWith(N0);
+          dbgs() << "Erasing from Parent1\n";
 					NewVI->eraseFromParent(); 
 				}else{
-					dbgs() << "!!!Error here this is not supposed to happen.\n";
+          // Droping extension. 
 					dbgs() << " sols Size of op0 is " << AvailableSolutions[NewVI->getOperand(0)].size() << "\n";
 					Value *N0 = NewVI->getOperand(0);	
 					WideningIntegerSolutionInfo *BestSol = AvailableSolutions[NewVI->getOperand(0)][0];
+          dbgs() << "NewVI type is " << NewVI->getType()->getTypeID() << "\n";
+          dbgs() << "new type N0 is " << N0->getType()->getTypeID() << "\n";
+          dbgs() << "Mutating Type..2\n";
+          dbgs() << "Applying best Sol --> " << *BestSol << "\n";
+          dbgs() << "While droping oldSol --> " << *Sol << "\n";
 					N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+          dbgs() << "UpdatedWidth is " << BestSol->getUpdatedWidth() << "\n";
+          dbgs() << "Replacing All Uses2\n";
 					NewVI->replaceAllUsesWith(N0);
+
+          dbgs() << "Erasing from Parent..2\n";
 					NewVI->eraseFromParent(); 		
 				}
         break;
