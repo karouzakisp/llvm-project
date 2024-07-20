@@ -16,6 +16,9 @@ namespace llvm {
 class Value;
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 1adadaf6c6bf (removed visitReturn)
 std::string OpcodesToStr[69] = {
     "Empty Instr",
     "Return",
@@ -86,6 +89,7 @@ std::string OpcodesToStr[69] = {
     "FillInst",
     "ConstantInt",
     "UnknownOpc",
+<<<<<<< HEAD
 =======
 
   std::string OpcodesToStr[69] = {
@@ -169,6 +173,8 @@ enum IntegerFillType{
   ANYTHING,
   UNDEFINED
 >>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
+=======
+>>>>>>> 1adadaf6c6bf (removed visitReturn)
 };
 
 enum IntegerFillType { SIGN = 0, ZEROS, ANYTHING, UNDEFINED };
@@ -745,6 +751,7 @@ public:
 
 class WIA_RET : public WideningIntegerSolutionInfo {
 public:
+<<<<<<< HEAD
   WIA_RET() {}
   ~WIA_RET() {}
   WIA_RET(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
@@ -768,25 +775,31 @@ public:
 class WIA_RET : public WideningIntegerSolutionInfo
 {
   public:
+=======
+>>>>>>> 1adadaf6c6bf (removed visitReturn)
   WIA_RET() {}
   ~WIA_RET() {}
-  WIA_RET(unsigned Opcode_, unsigned NewOpcode_, 
-            IntegerFillType FillType_, unsigned short FillTypeWidth_,
-            unsigned short Width_, unsigned short UpdatedWidth_, 
-            short int Cost_, Value *V_): 
-      WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-        Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_, 
-        UpdatedWidth_, Cost_, WIAK_RET, V_) {}
+  WIA_RET(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
+          unsigned short FillTypeWidth_, unsigned short Width_,
+          unsigned short UpdatedWidth_, short int Cost_, Value *V_)
+      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
+            UpdatedWidth_, Cost_, WIAK_RET, V_) {}
 
   static inline bool classof(WIA_RET const *) { return true; }
-  static inline bool classof(WideningIntegerSolutionInfo const *Base){
-    switch(Base->getKind()){
-      case WIAK_RET: return true;
-      default: return false;
-    } 
+  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
+    switch (Base->getKind()) {
+    case WIAK_RET:
+      return true;
+    default:
+      return false;
+    }
   }
+<<<<<<< HEAD
   
 >>>>>>> 93cbdd262740 ([llvm][CodeGen] added visitRET)
+=======
+>>>>>>> 1adadaf6c6bf (removed visitReturn)
 };
 
 } // namespace llvm

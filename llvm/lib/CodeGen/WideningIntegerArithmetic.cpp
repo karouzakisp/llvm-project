@@ -149,7 +149,6 @@ class WideningIntegerArithmetic : public FunctionPass {
     bool visitLOAD(Instruction *Instr);
     bool visitSTORE(Instruction *Instr);
     bool visitUNOP(Instruction *Instr);
-    bool visitRETURN(Instruction *Instr);
 		std::list<WideningIntegerSolutionInfo*> visitFILL(
         Instruction *Instr, std::queue<Value *> &Worklist);
 		std::list<WideningIntegerSolutionInfo*> 
@@ -675,32 +674,6 @@ WideningIntegerArithmetic::visitUNOP(Instruction *Instr){
 
 */
 
-bool WideningIntegerArithmetic::visitRETURN(Instruction *Instr){
-  bool Changed = false;
-  Value *N0 = Instr->getOperand(0);
-  unsigned Opcode = Instr->getOpcode();
-  Value *VI = dyn_cast<Value>(Instr);
-  // Available Solutions of child 
-  SolutionSet Sols = AvailableSolutions[N0];
-  for(WideningIntegerSolutionInfo *Sol : Sols){
-    auto *SolI = dyn_cast<Instruction>(Sol->getValue());
-    auto AvailableFillTypes = getFillTypes(SolI);
-    for(auto SolFillType : AvailableFillTypes){
-      IntegerFillType FillType = std::get<2>(SolFillType);
-      unsigned char w1 = Sol->getUpdatedWidth();
-      EVT NewVT = EVT::getIntegerVT(*Ctx, w1); 
-      if(!TLI->isOperationLegal(Opcode, NewVT))
-        continue;
-      unsigned char FillTypeWidth = Sol->getFillTypeWidth();
-      auto RetSol = new WIA_RET(Instr->getOpcode(), Instr->getOpcode(), 
-          FillType, FillTypeWidth, w1, w1 , Sol->getCost(), VI); 
-      RetSol->addOperand(RetSol); 
-      AvailableSolutions[VI].push_back(RetSol);
-      Changed = true; 
-    }
-  }
-  return Changed;
-}
 
 /* Add an extension based on the target before Value V */
 
