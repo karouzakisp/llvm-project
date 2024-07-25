@@ -4,20 +4,20 @@ int bar();
 short foo_s();
 long long int foo_l();
 
-int main(void){
+int main(void) {
   short i, j, k;
   int sum = 0;
-  for(k = 1; k < 50; k++){
-    if(k == j + 1 || k == i + 5){
+  for (k = 1; k < 50; k++) {
+    if (k == j + 1 || k == i + 5) {
       continue;
-    } 
-    for(j = 0; j < 100; j++){
-      for(i = 0; i < 1000; i++){
-        if( i % 2 == 0){
+    }
+    for (j = 0; j < 100; j++) {
+      for (i = 0; i < 1000; i++) {
+        if (i % 2 == 0 && ((j - i) % 4 != 3)) {
           sum += i && k;
-        }else{
-          sum -= i && (k-j);
-        } 
+        } else {
+          sum -= i && (k - j);
+        }
       }
     }
   }

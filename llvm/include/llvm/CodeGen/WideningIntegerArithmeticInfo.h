@@ -15,10 +15,6 @@ namespace llvm {
 
 class Value;
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 1adadaf6c6bf (removed visitReturn)
 std::string OpcodesToStr[69] = {
     "Empty Instr",
     "Return",
@@ -89,92 +85,6 @@ std::string OpcodesToStr[69] = {
     "FillInst",
     "ConstantInt",
     "UnknownOpc",
-<<<<<<< HEAD
-=======
-
-  std::string OpcodesToStr[69] = {
-  	"Empty Instr",
-		"Return",
-		"BranchInst",
-		"SwitchInst",
-		"IndirectBranch",
-		"InvokeInst",
-		"ResumeInst",
-		"UnreachableInst",
-		"CleanupReturnInst",
-		"CatchReturnInst",
-		"CatchSwitchInst",
-		"CallBrInst",// A call-site terminator ",
-		"UnaryOperator",
-		"Add",
-		"FAdd",
-		"Sub",
-		"FSub",
-		"Mul",
-		"FMul",
-		"UDiv",
-		"SDiv",
-		"FDiv",
-		"URem",
-		"SRem",
-		"FRem",
-		"Shl",
-		"LShr",
-		"AShr",
-		"And",
-		"Or",
-		"Xor",
-		"Alloca",
-		"Load",
-		"Store",
-		"GetElementPtr",
-		"Fence",
-		"AtomicCmpXchg",
-		"AtomicRMW",
-		"Trunc",
-		"ZExt",
-		"SExt",
-		"FPToUI",
-		"FPToSI",
-		"UIToFP",
-		"SIToFP",
-		"FPTrunc",
-		"FPExt",
-		"PtrToInt",
-		"IntToPtr",
-		"BitCast",
-		"AddrSpaceCast",
-		"CleanupPad",
-		"CatchPad",
-		"ICmp",
-		"FCmp",
-		"PHI",
-		"Call",
-		"Select",
-		"UserOp1",
-		"UserOp2",
-		"VAArg",
-		"ExtractElement",
-		"InsertElement",
-		"ShuffleVector",
-		"ExtractValue",
-		"InsertValue",
-		"FillInst",
-		"ConstantInt",
-		"UnknownOpc", 
-	};
-
-
-
-
-enum IntegerFillType{
-  SIGN = 0,
-  ZEROS,
-  ANYTHING,
-  UNDEFINED
->>>>>>> b7d9aac3932d ([llvm][CodeGen] fixing errors on applyChain)
-=======
->>>>>>> 1adadaf6c6bf (removed visitReturn)
 };
 
 enum IntegerFillType { SIGN = 0, ZEROS, ANYTHING, UNDEFINED };
@@ -747,59 +657,6 @@ public:
       return false;
     }
   }
-};
-
-class WIA_RET : public WideningIntegerSolutionInfo {
-public:
-<<<<<<< HEAD
-  WIA_RET() {}
-  ~WIA_RET() {}
-  WIA_RET(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
-          unsigned short FillTypeWidth_, unsigned short Width_,
-          unsigned short UpdatedWidth_, short int Cost_, Value *V_)
-      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
-            UpdatedWidth_, Cost_, WIAK_RET, V_) {}
-
-<<<<<<< HEAD
-  static inline bool classof(WIA_RET const *) { return true; }
-  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
-    switch (Base->getKind()) {
-    case WIAK_RET:
-      return true;
-    default:
-      return false;
-    }
-  }
-=======
-class WIA_RET : public WideningIntegerSolutionInfo
-{
-  public:
-=======
->>>>>>> 1adadaf6c6bf (removed visitReturn)
-  WIA_RET() {}
-  ~WIA_RET() {}
-  WIA_RET(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
-          unsigned short FillTypeWidth_, unsigned short Width_,
-          unsigned short UpdatedWidth_, short int Cost_, Value *V_)
-      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
-            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
-            UpdatedWidth_, Cost_, WIAK_RET, V_) {}
-
-  static inline bool classof(WIA_RET const *) { return true; }
-  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
-    switch (Base->getKind()) {
-    case WIAK_RET:
-      return true;
-    default:
-      return false;
-    }
-  }
-<<<<<<< HEAD
-  
->>>>>>> 93cbdd262740 ([llvm][CodeGen] added visitRET)
-=======
->>>>>>> 1adadaf6c6bf (removed visitReturn)
 };
 
 } // namespace llvm

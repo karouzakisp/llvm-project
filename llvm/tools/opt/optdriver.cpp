@@ -375,6 +375,7 @@ static bool shouldPinPassToLegacyPM(StringRef Pass) {
       "fix-irreducible",
       "expand-large-fp-convert",
       "callbrprepare",
+      "widening-integer-arithmetic",
   };
   for (const auto &P : PassNamePrefix)
     if (Pass.starts_with(P))
@@ -446,6 +447,7 @@ extern "C" int optMain(
   initializeExpandVectorPredicationPass(Registry);
   initializeWasmEHPreparePass(Registry);
   initializeWriteBitcodePassPass(Registry);
+  initializeWideningIntegerArithmeticPass(Registry);
   initializeReplaceWithVeclibLegacyPass(Registry);
   initializeJMCInstrumenterPass(Registry);
 
