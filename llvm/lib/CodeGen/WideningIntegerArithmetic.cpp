@@ -1477,10 +1477,13 @@ bool WideningIntegerArithmetic::visitDROP_EXT(Instruction *Instr,
   // ConstantInt?
   unsigned int ExtendedWidth = Instr->getType()->getScalarSizeInBits();
   unsigned int OldWidth = N0->getType()->getScalarSizeInBits();
+  // TODO: We need to check that the N0 fillTypeWidth is less than
+  // the width after the extension is dropped. If it isn't probably
+  // we cannot drop the extension??
   dbgs() << "NewWidth of Node is " << OldWidth << '\n';
   dbgs() << "N0 name is " << N0->getName() << "\n";
   int Opc;
-  if (auto Iop = dyn_cast<Instruction>(N0)) {
+  if (auto *Iop = dyn_cast<Instruction>(N0)) {
     Opc = TLI->InstructionOpcodeToISD(Iop->getOpcode());
   } else if (isa<ConstantInt>(N0)) {
     Opc = -1; //  Indicates a ConstantIn
@@ -1520,7 +1523,7 @@ bool WideningIntegerArithmetic::visitDROP_EXT(Instruction *Instr,
   Value *VInstr = dyn_cast<Value>(Instr);
   dbgs() << "Expr Solutions Size is " << AvailableSolutions[N0].size() << '\n';
   SolutionSet ExprSolutions = AvailableSolutions[N0];
-  for (auto Solution : ExprSolutions) {
+  for (auto *Solution : ExprSolutions) {
     dbgs() << "Sol is " << *Solution << "\n";
     if (Solution->getKind() == WIAK_DROP_EXT) {
       dbgs() << "Skipping Sol " << "\n";
@@ -1530,6 +1533,10 @@ bool WideningIntegerArithmetic::visitDROP_EXT(Instruction *Instr,
     // We simply drop the extension and we will later see if it's needed.
     LLVM_DEBUG(dbgs() << "Drop extension in Solutions" << '\n');
     unsigned char FillTypeWidth = Solution->getFillTypeWidth();
+    if (FillTypeWidth > OldWidth) {
+      // TODO: check this. should be >= or > ??
+      continue;
+    }
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(
         Instr->getOpcode(), Solution->getNewOpcode(), ExtensionChoice,
         FillTypeWidth, ExtendedWidth /*OldWidth*/, OldWidth /*NewWidth*/,
@@ -1651,6 +1658,9 @@ bool WideningIntegerArithmetic::applyChain(
     Type *NewTy = getTypeFromInteger(Sol->getUpdatedWidth());
     unsigned NVTBits = NewTy->getScalarSizeInBits();
     switch (SolKind) {
+    default:
+      VComb->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
+      break;
     case WIAK_WIDEN:
     case WIAK_WIDEN_GARBAGE: {
       if (ExtensionChoice == SIGN) {
@@ -1688,8 +1698,13 @@ bool WideningIntegerArithmetic::applyChain(
             // TODO: how to get the BestUserSol of the Inst
             // that is user to the Inst we need to update?
             // TODO: isLegalToPromote is suited for this case?
-
-            if (!isLegalToPromote(UseI)) {
+            unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
+            if (!isLegalToPromote(UseI) ||
+                UseFillTypeWidth > Sol->getUpdatedWidth()) {
+              // TODO: Maybe count users that we cannot promote or drop the
+              // extension and use that information? If we can drop the
+              // extension to most users maybe we can create another extension
+              // for the remaining users??
               return false;
             }
           }
@@ -1703,9 +1718,8 @@ bool WideningIntegerArithmetic::applyChain(
         WideningIntegerSolutionInfo *BestSol = Search->second;
         if (CanDropExtFromAllUsers(NewVI)) {
           // TODO: do we need to mutate the type if we drop the extension?
-          N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
           replaceAllUsersOfWith(NewVI, N0);
-          NewVI->eraseFromParent();
+          InstsToRemove.insert(NewVI);
         }
       } else {
         // Droping extension.
@@ -1716,15 +1730,10 @@ bool WideningIntegerArithmetic::applyChain(
         WideningIntegerSolutionInfo *BestSol =
             AvailableSolutions[NewVI->getOperand(0)][0];
         if (CanDropExtFromAllUsers(NewVI)) {
-          // TODO: do we need to mutate the type if we drop the extension?
-          N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
           replaceAllUsersOfWith(NewVI, N0);
-          NewVI->eraseFromParent();
+          InstsToRemove.insert(NewVI);
         }
       }
-      break;
-    default:
-      VComb->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
       break;
     }
     }
@@ -1765,7 +1774,7 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   unsigned char TruncatedWidth = Instr->getType()->getScalarSizeInBits();
   // We simply drop the truncation and we will later see if it's needed.
   NumTruncatesDropped++;
-  for (auto Sol : ExprSolutions) {
+  for (auto *Sol : ExprSolutions) {
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_LOCOPY(
         Instr->getOpcode(), Sol->getOpcode(), Sol->getFillType(),
         Sol->getFillTypeWidth(), TruncatedWidth, NewWidth, Sol->getCost(),
@@ -1779,7 +1788,7 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   NumTruncatesDropped++;
 
   // We simply drop the truncation and we will later see if it's needed.
-  for (auto Sol : ExprSolutions) {
+  for (auto *Sol : ExprSolutions) {
     WideningIntegerSolutionInfo *Expr =
         new WIA_DROP_LOIGNORE(Instr->getOpcode(), Sol->getOpcode(),
                               Sol->getFillType(), Sol->getFillTypeWidth(),
@@ -1812,8 +1821,8 @@ bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
   }
   bool Changed = false;
   unsigned ExtensionOpc = getExtensionChoice(ExtensionChoice);
-  for (auto LeftSol : LeftSols) {
-    for (auto RightSol : RightSols) {
+  for (auto *LeftSol : LeftSols) {
+    for (auto *RightSol : RightSols) {
       // check that LeftSol->getWidth == RightSol->getWidth &&
       // check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
       // check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
@@ -1830,11 +1839,11 @@ bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
             TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
           continue;
         }
-        unsigned cost = LeftSol->getCost() + RightSol->getCost() + 1;
+        unsigned Cost = LeftSol->getCost() + RightSol->getCost() + 1;
         // add all integers that are bigger to the solutions
         WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(
             Instr->getOpcode(), ExtensionOpc, ExtensionChoice,
-            LeftSol->getFillTypeWidth(), VTBits, IntegerSize, cost, VI);
+            LeftSol->getFillTypeWidth(), VTBits, IntegerSize, Cost, VI);
         Expr->addOperand(LeftSol);
         if (addNonRedudant(AvailableSolutions[VI], Expr)) {
           Changed = true;
