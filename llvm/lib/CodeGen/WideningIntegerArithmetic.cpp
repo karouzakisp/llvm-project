@@ -113,7 +113,8 @@ private:
 
   DenseMap<unsigned, UnaryFillTypeSet> UnaryFillTypesMap;
   DenseMap<unsigned, FillTypeSet> FillTypesMap;
-  SmallPtrSetImpl<Instruction *> &InstsToRemove;
+  SmallPtrSet<Instruction *, 8> InstsToRemove;
+  SmallPtrSet<Value *, 8> Promoted;
 
   UnaryFillTypeSet getUnaryFillTypes(unsigned Opcode);
   FillTypeSet getFillTypes(Instruction *Instr);
@@ -133,12 +134,12 @@ private:
 
   bool addNonRedudant(SolutionSet &Solutions,
                       WideningIntegerSolutionInfo *GeneratedSol);
-  inline bool hasTypeGarbage(IntegerFillType fill);
-  inline bool hasTypeT(IntegerFillType fill);
-  inline bool hasTypeS(IntegerFillType fill);
+  inline bool hasTypeGarbage(IntegerFillType Fill);
+  inline bool hasTypeT(IntegerFillType Fill);
+  inline bool hasTypeS(IntegerFillType Fill);
   bool closure(Instruction *Instr, std::queue<Value *> &Worklist);
   bool tryClosure(Instruction *Instr, std::queue<Value *> &Worklist,
-                  bool changed);
+                  bool Changed);
 
   bool visitInstruction(Value *VI, std::queue<Value *> &Worklist);
   bool visitBINOP(Instruction *Binop, std::queue<Value *> &Worklist);
@@ -156,7 +157,8 @@ private:
   visitNARROW(Instruction *Instr, std::queue<Value *> &Worklist);
   bool visitDROP_EXT(Instruction *Instr, std::queue<Value *> &Worklist);
   bool visitDROP_TRUNC(Instruction *Instr, std::queue<Value *> &Worklist);
-  bool visitEXTLO(Instruction *Instr, std::queue<Value *> &Worklist);
+  bool visitEXTLO(Instruction *Instr, unsigned short LowWidth,
+                  std::queue<Value *> &Worklist);
   bool visitSUBSUME_FILL(Instruction *Instr);
   bool visitSUBSUME_INDEX(Instruction *Instr);
   bool visitNATURAL(Instruction *Instr);
@@ -166,10 +168,14 @@ private:
                        SmallVector<Value *, 32> IncomingValues,
                        std::queue<Value *> &Worklist);
 
-  // Finds all the combinations of the legal
-  // solutions of all the Users of Instr
-  DenseMap<Value *, WideningIntegerSolutionInfo *>
-  getAllUsersLegalSolutions(Instruction *Instr);
+  // A map that holds for every instruction the best solution
+  // for each of the users of that instruction.
+  DenseMap<Instruction *, DenseMap<Value *, WideningIntegerSolutionInfo *>>
+      BestUserSolsPerInst;
+  // For every instruction **I** inside the Function
+  // it calculates the best combination among the legal
+  // solutions of every User of **I**
+  void calcBestUserSols(Function &F);
 
   void replaceAllUsersOfWith(Value *From, Value *To);
   // iterates all the uses of an Instruction that is solved
@@ -499,12 +505,13 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F) {
     }
   }
 
+  calcBestUserSols(F);
+
   bool Changed = false;
   dbgs() << "Applying Solutions ...\n";
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      auto UsersBestSols = getAllUsersLegalSolutions(&I);
-      bool ChangedOnce = applyChain(UsersBestSols);
+      bool ChangedOnce = applyChain(BestUserSolsPerInst[&I]);
       if (ChangedOnce) {
         Changed = true;
       }
@@ -771,58 +778,64 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
-DenseMap<Value *, WideningIntegerSolutionInfo *>
-WideningIntegerArithmetic::getAllUsersLegalSolutions(Instruction *Instr) {
+void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
 
-  SmallVector<Value *, 4> VUsers;
-  std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>> Combinations;
-  DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;
-  if (Instr->getNumUses() == 0) {
-    return BestCombination;
-  }
-  for (auto &Use : Instr->uses()) {
-    Value *VUser1 = Use.getUser();
-    VUsers.push_back(VUser1);
-    dbgs() << "Added User --> " << VUser1 << "\n";
-  }
-  dbgs() << "VUSers size is " << VUsers.size();
-  Value *VUser = VUsers[0];
-  SmallVector<Value *, 4> UsersWithout = VUsers;
-  UsersWithout.erase(UsersWithout.begin());
-  for (WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]) {
-    bool AllMatching = true;
-    DenseMap<Value *, WideningIntegerSolutionInfo *> OneCombination;
-    OneCombination[VUser] = Sol;
-    if (UsersWithout.size() == 0) {
-      Combinations.push_back(OneCombination);
-      continue;
-    }
-    for (Value *VUser2 : UsersWithout) {
-      for (WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]) {
-        if (isLegalAndMatching(Sol, Sol2)) {
-          OneCombination[VUser2] = Sol2;
-        } else {
-          AllMatching = false;
+  for (BasicBlock &BB : F) {
+    for (Instruction &Instr : BB) {
+      SmallVector<Value *, 4> VUsers;
+      std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>>
+          Combinations;
+      DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;
+      if (Instr.getNumUses() == 0) {
+        continue;
+        // TODO: Instruction is dead erase it ??
+      }
+      for (auto &Use : Instr.uses()) {
+        Value *VUser1 = Use.getUser();
+        VUsers.push_back(VUser1);
+        dbgs() << "Added User --> " << *VUser1 << "\n";
+      }
+      dbgs() << "VUSers size is " << VUsers.size();
+      Value *VUser = VUsers[0];
+      SmallVector<Value *, 4> UsersWithout = VUsers;
+      UsersWithout.erase(UsersWithout.begin());
+      for (WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]) {
+        bool AllMatching = true;
+        DenseMap<Value *, WideningIntegerSolutionInfo *> OneCombination;
+        OneCombination[VUser] = Sol;
+        if (UsersWithout.size() == 0) {
+          Combinations.push_back(OneCombination);
+          continue;
+        }
+        for (Value *VUser2 : UsersWithout) {
+          for (WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]) {
+            if (isLegalAndMatching(Sol, Sol2)) {
+              OneCombination[VUser2] = Sol2;
+            } else {
+              AllMatching = false;
+            }
+          }
+        }
+        if (AllMatching) {
+          Combinations.push_back(OneCombination);
+        }
+        OneCombination.clear();
+      }
+      int MinCost = INT_MAX;
+      for (auto ValuesSolsMap : Combinations) {
+        int Sum = 0;
+        for (const auto &It : ValuesSolsMap) {
+          Sum += It.second->getCost();
+        }
+        if (Sum < MinCost) {
+          MinCost = Sum;
+          BestCombination = ValuesSolsMap;
         }
       }
+      // TODO: save for each instruction the best Combination
+      BestUserSolsPerInst[&Instr] = BestCombination;
     }
-    if (AllMatching) {
-      Combinations.push_back(OneCombination);
-    }
-    OneCombination.clear();
-  }
-  int MinCost = INT_MAX;
-  for (auto ValuesSolsMap : Combinations) {
-    int Sum = 0;
-    for (const auto &It : ValuesSolsMap) {
-      Sum += It.second->getCost();
-    }
-    if (Sum < MinCost) {
-      MinCost = Sum;
-      BestCombination = ValuesSolsMap;
-    }
-  }
-  return BestCombination;
+  } // end for BasicBlock
 }
 
 inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Value *V) {
@@ -861,7 +874,6 @@ WideningIntegerArithmetic::visit_widening(Value *VInstr,
     dbgs() << "Checking solved" << "\n";
     if (isSolved(V)) {
       dbgs() << "Contuining... this V is solved\n";
-      continue;
     } else if (!isInWorklist(V)) {
       dbgs() << "!!!!!!!!!!!Calling visit_widening" << "\n";
       visit_widening(V, Worklist);
@@ -976,9 +988,9 @@ bool WideningIntegerArithmetic::solveSimplePhis(
                   : Sol2->getFillTypeWidth();
           unsigned NewCost = Sol->getCost() > Sol2->getCost() ? Sol->getCost()
                                                               : Sol2->getCost();
-          auto PhiSol = new WIA_PHI(PhiInst->getOpcode(), PhiInst->getOpcode(),
-                                    NewFillType, NewFillTypeWidth, InstrWidth,
-                                    Sol->getUpdatedWidth(), NewCost, Vphi);
+          auto *PhiSol = new WIA_PHI(PhiInst->getOpcode(), PhiInst->getOpcode(),
+                                     NewFillType, NewFillTypeWidth, InstrWidth,
+                                     Sol->getUpdatedWidth(), NewCost, Vphi);
 
           if (addNonRedudant(AvailableSolutions[VInstr], PhiSol)) {
             Changed = true;
@@ -1063,7 +1075,7 @@ bool WideningIntegerArithmetic::visitPHI(Instruction *Instr,
     Value *V = PhiInst->getIncomingValue(i);
     if (AvailableSolutions[V].size() == 0) {
       dbgs() << "Calling create default sol,  ";
-      if (auto I = dyn_cast<Instruction>(V)) {
+      if (auto *I = dyn_cast<Instruction>(V)) {
         dbgs() << "Opc is --> " << OpcodesToStr[I->getOpcode()] << "\n";
       }
       createDefaultSol(V);
@@ -1106,10 +1118,11 @@ bool WideningIntegerArithmetic::visitPHI(Instruction *Instr,
 // . check legal values for example XOR hass these legal types
 // { s -> s x s }, {g-> g x g}, { z -> z x z }
 // We can  choose
-// Solution 1 s[32]:64 cost 4 + 3, Solution 2 g[32]:64 cost 3 needs sext or zext
-// depends on the fill type of target so total 3 + 1 } Instruction can decide
-// what solution is appropriate for example print requires sext to use Solution
-// 2 because upper  // upper bits {i32, i32, i32 } can we Truncate?
+// Solution 1 s[32]:64 cost 4 + 3, Solution 2 g[32]:64 cost 3 needs sext or
+// zext depends on the fill type of target so total 3 + 1 } Instruction can
+// decide what solution is appropriate for example print requires sext to
+// use Solution 2 because upper  // upper bits {i32, i32, i32 } can we
+// Truncate?
 
 // check IsRedudant uses fillTypeWidth
 // Return all the solution based on binop rules op1 x op2 -> W
@@ -1127,10 +1140,10 @@ bool WideningIntegerArithmetic::combineBINOPSols(
          AvailableSolutions[Binop->getOperand(1)]) {
       // Test whether current binary operator has the available
       // fill type provided by leftSolution and rightSolution
-      auto leftFill = leftSolution->getFillType();
-      auto rightFill = rightSolution->getFillType();
-      dbgs() << "Left Fill type is " << leftFill << "\n";
-      dbgs() << "right Fill type is " << rightFill << "\n";
+      auto LeftFill = leftSolution->getFillType();
+      auto RightFill = rightSolution->getFillType();
+      dbgs() << "Left Fill type is " << LeftFill << "\n";
+      dbgs() << "right Fill type is " << RightFill << "\n";
       auto FillType =
           getOrNullFillType((OperandFillTypes), leftSolution->getFillType(),
                             rightSolution->getFillType());
@@ -1140,7 +1153,8 @@ bool WideningIntegerArithmetic::combineBINOPSols(
         // dbgs() << "Right Solution --> " << *rightSolution << '\n';
         continue;
       }
-      // dbgs() << "Passed FillType for combination --> " << FillType << "\n";
+      // dbgs() << "Passed FillType for combination --> " << FillType <<
+      // "\n";
       unsigned int w1 = leftSolution->getUpdatedWidth();
       unsigned int w2 = rightSolution->getUpdatedWidth();
       if (w1 != w2) {
@@ -1157,10 +1171,12 @@ bool WideningIntegerArithmetic::combineBINOPSols(
         // dbgs() << "Right Solution --> " << *rightSolution << '\n';
         dbgs() << "Error here be aware. ------ " << '\n';
         continue;
-        // dbgs() << "EVT get String " << LD->getMemoryVT().getEVTString() <<
+        // dbgs() << "EVT get String " << LD->getMemoryVT().getEVTString()
+        // <<
         // '\n';
       }
-      // dbgs() << "The widths are the same and we continue--> " << w1 << "\n";
+      // dbgs() << "The widths are the same and we continue--> " << w1 <<
+      // "\n";
       EVT NewVT = EVT::getIntegerVT(*Ctx, w1);
       if (!TLI->isOperationLegal(TLI->InstructionOpcodeToISD(Opcode), NewVT)) {
         LLVM_DEBUG(dbgs() << "Width: " << w1 << " Is not legal for binop"
@@ -1184,8 +1200,8 @@ bool WideningIntegerArithmetic::combineBINOPSols(
       // that is of the form i32 x i32 -> i32
       // and stored in a sign extended format to i64
 
-      auto Sol = new WIA_BINOP(Opcode, Opcode, FillType, FillTypeWidth, w1,
-                               UpdatedWidth, Cost, VBinop);
+      auto *Sol = new WIA_BINOP(Opcode, Opcode, FillType, FillTypeWidth, w1,
+                                UpdatedWidth, Cost, VBinop);
       Sol->addOperand(leftSolution);
       Sol->addOperand(rightSolution);
       LLVM_DEBUG(dbgs() << "Adding Sol with cost " << Cost << " and width "
@@ -1203,6 +1219,9 @@ bool WideningIntegerArithmetic::combineBINOPSols(
     dbgs() << "We didn't find a Solution for binop with opc "
            << OpcodesToStr[Opcode] << "\n";
     dbgs() << "So we generate only the default.\n";
+    // TODO: should we call closure here?
+    // @Panagiotis I think yes because we need to generate
+    // All the possible solutions for the default sol still.
     createDefaultSol(VBinop);
   }
   return false;
@@ -1217,32 +1236,33 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
     if (auto *I = dyn_cast<Instruction>(V0)) {
       if (auto *CI = dyn_cast<ConstantInt>(V1)) {
         unsigned LeftShiftC = CI->getZExtValue();
+        unsigned TotalBits = I->getType()->getScalarSizeInBits();
         if (I->getOpcode() == Instruction::AShr) {
-          auto ShlV1 = dyn_cast<Instruction>(I);
+          auto *ShlV1 = dyn_cast<Instruction>(I);
           if (auto *C2 = dyn_cast<ConstantInt>(ShlV1)) {
             unsigned ARightShiftC = C2->getZExtValue();
             if (ARightShiftC == LeftShiftC) {
-              return visitEXTLO(Binop, Worklist);
+              return visitEXTLO(Binop, TotalBits - LeftShiftC, Worklist);
             }
           }
         }
       }
     }
   }
-  auto leftSols = AvailableSolutions[V0];
-  auto rightSols = AvailableSolutions[V1];
+  auto LeftSols = AvailableSolutions[V0];
+  auto RightSols = AvailableSolutions[V1];
   // TODO how to handle carry and borrow?
-  if (leftSols.size() <= 0) {
+  if (LeftSols.size() <= 0) {
     Worklist.push(V0);
-    bool addedLeft = createDefaultSol(V0);
+    bool AddedLeft = createDefaultSol(V0);
     dbgs() << "Found empty left Sols on Binop and added default is "
-           << addedLeft << "\n";
+           << AddedLeft << "\n";
   }
-  if (rightSols.size() <= 0) {
+  if (RightSols.size() <= 0) {
     Worklist.push(V1);
-    bool addedRight = createDefaultSol(V1);
+    bool AddedRight = createDefaultSol(V1);
     dbgs() << "Found empty right Sols on Binop and added default is "
-           << addedRight << "\n";
+           << AddedRight << "\n";
   }
 
   dbgs() << "Operand 0 Solutions Size is --> " << AvailableSolutions[V0].size()
@@ -1315,14 +1335,14 @@ inline unsigned
 WideningIntegerArithmetic::getExtCost(Instruction *Instr,
                                       WideningIntegerSolutionInfo *Sol,
                                       unsigned short IntegerSize) {
-  unsigned cost = Sol->getCost();
+  unsigned Cost = Sol->getCost();
   Type *Ty1 = Instr->getType();
   ;
   Type *Ty2 = getTypeFromInteger((int)IntegerSize);
   if (!TLI->isZExtFree(Ty1, Ty2) || !TLI->isSExtFree(Ty1, Ty2)) {
-    ++cost;
+    ++Cost;
   }
-  return cost;
+  return Cost;
 }
 
 std::list<WideningIntegerSolutionInfo *>
@@ -1396,8 +1416,8 @@ WideningIntegerArithmetic::visitWIDEN_GARBAGE(Instruction *Instr,
                       << '\n');
     unsigned IsdOpc = TLI->InstructionOpcodeToISD(Sol->getOpcode());
     if (llvm::ISD::isExtOpcode(IsdOpc) ||
-        // TODO how to check for this? Is it needed also ? Sol->getOpcode() ==
-        // ISD::SIGN_EXTEND_INREG ) ||
+        // TODO how to check for this? Is it needed also ? Sol->getOpcode()
+        // == ISD::SIGN_EXTEND_INREG ) ||
         IsdOpc == Instruction::Trunc)
       continue;
     LLVM_DEBUG(dbgs() << "Passed first if --> " << Sol << '\n');
@@ -1608,36 +1628,64 @@ bool WideningIntegerArithmetic::applyChain(
       return Changed;
     }
   }
-  IRBuilder<> Builder{Ctx};
+  IRBuilder<> Builder{*Ctx};
 
-  auto InsertZExt = [&](Value *V, Instruction *InsertPt, Type *ExtTy) {
-    assert(V->getType() != ExtTy && "zext already extends to i32");
-    LLVM_DEBUG(dbgs() << "IR Promotion: Inserting ZExt for " << *V << "\n");
+  auto InsertExt = [&](Value *V, Instruction *InsertPt, Type *ExtTy) {
     Builder.SetInsertPoint(InsertPt);
     if (auto *I = dyn_cast<Instruction>(V))
       Builder.SetCurrentDebugLocation(I->getDebugLoc());
-
-    Value *ZExt = Builder.CreateZExt(V, ExtTy);
-    if (auto *I = dyn_cast<Instruction>(ZExt)) {
-      if (isa<Argument>(V))
-        I->moveBefore(InsertPt);
-      else
-        I->moveAfter(InsertPt);
-      // NewInsts.insert(I);
+    if (ExtensionChoice == ZEROS) {
+      LLVM_DEBUG(dbgs() << "WideningIntegerArithmetic: Inserting SExt for "
+                        << *V << "\n");
+      Value *ZExt = Builder.CreateZExt(V, ExtTy);
+      if (auto *I = dyn_cast<Instruction>(ZExt)) {
+        if (isa<Argument>(V))
+          I->moveBefore(InsertPt);
+        else
+          I->moveAfter(InsertPt);
+        // NewInsts.insert(I);
+      }
+      replaceAllUsersOfWith(V, ZExt);
+    } else { // ExtensionChoice == SIGN
+      LLVM_DEBUG(dbgs() << "WideningIntegerArithmetic: Inserting SExt for "
+                        << *V << "\n");
+      Value *SExt = Builder.CreateZExt(V, ExtTy);
+      if (auto *I = dyn_cast<Instruction>(SExt)) {
+        if (isa<Argument>(V))
+          I->moveBefore(InsertPt);
+        else
+          I->moveAfter(InsertPt);
+        // NewInsts.insert(I);
+      }
     }
-
-    replaceAllUsersOfWith(V, ZExt);
   };
 
-  auto InsertSExt = [&](Value *V, Instruction *InsertPt, Type *ExtTy) {
+  auto InsertTrunc = [&](Value *V, Type *TruncTy) -> Instruction * {
+    if (!isa<Instruction>(V) || !isa<IntegerType>(V->getType()))
+      return nullptr;
+
+    if (Promoted.count(V))
+      return nullptr;
+
+    LLVM_DEBUG(dbgs() << "Widening Integer Arithmetic : Creating " << *TruncTy
+                      << " Trunc for " << *V << "\n");
+    Builder.SetInsertPoint(cast<Instruction>(V));
+    auto *Trunc = dyn_cast<Instruction>(Builder.CreateTrunc(V, TruncTy));
+    // if (Trunc)
+    //   NewInsts.insert(Trunc);
+    return Trunc;
+  };
+
+  auto InsertSExtInReg = [&](Value *V, Instruction *InsertPt, Type *B,
+                             Type *ExtTy) {
     LLVM_DEBUG(dbgs() << "WideningIntegerArithmetic: Inserting SExt for " << *V
                       << "\n");
     Builder.SetInsertPoint(InsertPt);
     if (auto *I = dyn_cast<Instruction>(V))
       Builder.SetCurrentDebugLocation(I->getDebugLoc());
-
-    Value *ZExt = Builder.CreateZExt(V, ExtTy);
-    if (auto *I = dyn_cast<Instruction>(ZExt)) {
+    Value *Truncated = InsertTrunc(V, B);
+    Value *SExt = Builder.CreateSExt(Truncated, ExtTy);
+    if (auto *I = dyn_cast<Instruction>(SExt)) {
       if (isa<Argument>(V))
         I->moveBefore(InsertPt);
       else
@@ -1645,7 +1693,7 @@ bool WideningIntegerArithmetic::applyChain(
       // NewInsts.insert(I);
     }
 
-    replaceAllUsersOfWith(V, ZExt);
+    replaceAllUsersOfWith(V, SExt);
   };
 
   for (auto &Combination : BestSolsUsersCombination) {
@@ -1663,26 +1711,18 @@ bool WideningIntegerArithmetic::applyChain(
       break;
     case WIAK_WIDEN:
     case WIAK_WIDEN_GARBAGE: {
-      if (ExtensionChoice == SIGN) {
-        if (auto *Arg = dyn_cast<Argument>(NewVI)) {
-          BasicBlock &BB = Arg->getParent()->front();
-          InsertSExt(NewVI, &*BB.getFirstInsertionPt(), NewTy);
-        } else {
-          InsertSExt(NewVI, NewVI, NewTy);
-        }
-      } else { // ExtensionChoice == ZEROS
-        if (auto *Arg = dyn_cast<Argument>(NewVI)) {
-          BasicBlock &BB = Arg->getParent()->front();
-          InsertZExt(NewVI, &*BB.getFirstInsertionPt(), NewTy);
-        } else {
-          InsertZExt(NewVI, NewVI, NewTy);
-        }
+      Instruction *InsertPt = NewVI;
+      if (auto *Arg = dyn_cast<Argument>(NewVI)) {
+        BasicBlock &BB = Arg->getParent()->front();
+        InsertPt = &*BB.getFirstInsertionPt();
       }
+      InsertExt(NewVI, InsertPt, NewTy);
+      Promoted.insert(NewVI);
       break;
     }
     case WIAK_NARROW: {
-      // TODO: needs fixes not complete, switch is diff stores are diff and
-      // maybe more.
+      // TODO: needs fixes not complete, switch is diff stores are diff
+      // and maybe more.
       auto *Trunc = new TruncInst(
           NewV, NewTy, VComb->getName() + "." + std::to_string(NVTBits), NewVI);
       dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
@@ -1701,10 +1741,10 @@ bool WideningIntegerArithmetic::applyChain(
             unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
             if (!isLegalToPromote(UseI) ||
                 UseFillTypeWidth > Sol->getUpdatedWidth()) {
-              // TODO: Maybe count users that we cannot promote or drop the
-              // extension and use that information? If we can drop the
-              // extension to most users maybe we can create another extension
-              // for the remaining users??
+              // TODO: Maybe count users that we cannot promote or drop
+              // the extension and use that information? If we can drop
+              // the extension to most users maybe we can create another
+              // extension for the remaining users??
               return false;
             }
           }
@@ -1736,10 +1776,10 @@ bool WideningIntegerArithmetic::applyChain(
       }
       break;
     }
+      assert(isa<Instruction>(NewV) || isa<ConstantInt>(NewV));
+      // we need to have all the Combinations of the LegalUsersSolutions..
+      Changed = true;
     }
-    assert(isa<Instruction>(NewV) || isa<ConstantInt>(NewV));
-    // we need to have all the Combinations of the LegalUsersSolutions..
-    Changed = true;
   }
   return Changed;
 }
@@ -1755,9 +1795,10 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   // ConstantInt?
   Value *N0 = Instr->getOperand(0);
   Value *VInstr = dyn_cast<Value>(Instr);
+  unsigned short TruncatedWidth = Instr->getType()->getScalarSizeInBits();
   if (auto *I = dyn_cast<Instruction>(N0)) {
     if (I->getOpcode() == Instruction::SExt) {
-      return visitEXTLO(Instr, Worklist);
+      return visitEXTLO(Instr, TruncatedWidth, Worklist);
     }
   }
   SmallVector<WideningIntegerSolutionInfo *> ExprSolutions =
@@ -1771,7 +1812,6 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   bool Changed = false;
   // NewWidth is the width of the value before the truncation
   unsigned char NewWidth = N0->getType()->getScalarSizeInBits();
-  unsigned char TruncatedWidth = Instr->getType()->getScalarSizeInBits();
   // We simply drop the truncation and we will later see if it's needed.
   NumTruncatesDropped++;
   for (auto *Sol : ExprSolutions) {
@@ -1802,13 +1842,14 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
 }
 
 bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
+                                           unsigned short TruncatedWidth,
                                            std::queue<Value *> &Worklist) {
   SolutionSet CalcSols;
   Value *N0 = Instr->getOperand(0);
   Value *N1 = Instr->getOperand(1);
   Value *VI = dyn_cast<Value>(Instr);
   // TODO check! is VTBits correct?
-  unsigned VTBits = N0->getType()->getScalarSizeInBits();
+  unsigned VTBits = 32 - N0->getType()->getScalarSizeInBits();
   SolutionSet LeftSols = AvailableSolutions[N0];
   SolutionSet RightSols = AvailableSolutions[N1];
   if (LeftSols.size() <= 0) {
@@ -1825,25 +1866,27 @@ bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
     for (auto *RightSol : RightSols) {
       // check that LeftSol->getWidth == RightSol->getWidth &&
       // check that Leftsol->fillTypeWidth == RightSol->fillTypeWidth
-      // check that LeftSol->fillType = Zeros and LeftSol->fillType = Garbage
+      // check that LeftSol->fillType = Zeros and LeftSol->fillType =
+      // Garbage
       if (LeftSol->getUpdatedWidth() != RightSol->getUpdatedWidth() ||
           LeftSol->getFillTypeWidth() != RightSol->getFillTypeWidth() ||
           (LeftSol->getFillType() != ZEROS &&
            hasTypeGarbage(RightSol->getFillType()))) {
         continue;
       }
-      unsigned char LeftSolWidth = LeftSol->getUpdatedWidth();
       for (int IntegerSize : IntegerSizes) {
         EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
-        if (IntegerSize <= LeftSolWidth &&
+        if (IntegerSize <= TruncatedWidth &&
             TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
           continue;
         }
         unsigned Cost = LeftSol->getCost() + RightSol->getCost() + 1;
         // add all integers that are bigger to the solutions
+        // FIXME:: TruncatedWidth must be updated to what? leftSol width??
+        // LeftSol can be either a SExt or ASHR
         WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(
             Instr->getOpcode(), ExtensionOpc, ExtensionChoice,
-            LeftSol->getFillTypeWidth(), VTBits, IntegerSize, Cost, VI);
+            LeftSol->getFillTypeWidth(), TruncatedWidth, IntegerSize, Cost, VI);
         Expr->addOperand(LeftSol);
         if (addNonRedudant(AvailableSolutions[VI], Expr)) {
           Changed = true;
@@ -2014,7 +2057,6 @@ void WideningIntegerArithmetic::initOperatorsFillTypes() {
 }
 
 inline bool WideningIntegerArithmetic::hasTypeGarbage(IntegerFillType fill) {
-
   return 1;
 }
 
@@ -2027,3 +2069,4 @@ inline bool WideningIntegerArithmetic::hasTypeS(IntegerFillType fill) {
     return 0;
   }
   return 1;
+}
