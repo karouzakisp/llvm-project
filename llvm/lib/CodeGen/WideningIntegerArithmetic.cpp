@@ -582,7 +582,7 @@ bool WideningIntegerArithmetic::closure(Instruction *Instr,
                       << FillsList.size() << '\n'
                       << "Opcode to Str is --> "
                       << OpcodesToStr[Instr->getOpcode()] << '\n');
-    for (auto PossibleSol : FillsList) {
+    for (auto *PossibleSol : FillsList) {
       LLVM_DEBUG(dbgs() << "Trying to Add Possible Sol --> " << *PossibleSol
                         << '\n');
 
@@ -809,6 +809,9 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         }
         for (Value *VUser2 : UsersWithout) {
           for (WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]) {
+            // FIXME: We should check that if the updatedWidths of the users are
+            // Matching then we need the Instruction of the Users to have at
+            // least one Solution of that Width.
             if (isLegalAndMatching(Sol, Sol2)) {
               OneCombination[VUser2] = Sol2;
             } else {
@@ -833,6 +836,9 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         }
       }
       // TODO: save for each instruction the best Combination
+      // TODO: this Instruction may have Multiple Solutions.
+      // We need to know the best Combination for which Solution of the
+      // Instruction matches.
       BestUserSolsPerInst[&Instr] = BestCombination;
     }
   } // end for BasicBlock
@@ -1223,6 +1229,7 @@ bool WideningIntegerArithmetic::combineBINOPSols(
     // @Panagiotis I think yes because we need to generate
     // All the possible solutions for the default sol still.
     createDefaultSol(VBinop);
+    return tryClosure(Binop, Worklist, true);
   }
   return false;
 }
@@ -1272,6 +1279,10 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
   return combineBINOPSols(Binop, Worklist);
 }
 
+// TODO: U(k_w) = n, where n < oldWidth <= newwidth
+// k_w is the starting point of the SExtInReg
+// how to find it?
+// FIXME: right now we use oldWidth as the starting point..
 std::list<WideningIntegerSolutionInfo *>
 WideningIntegerArithmetic::visitFILL(Instruction *Instr,
                                      std::queue<Value *> &Worklist) {
@@ -1607,6 +1618,8 @@ void WideningIntegerArithmetic::replaceAllUsersOfWith(Value *From, Value *To) {
       InstsToRemove.insert(I);
 }
 
+// TODO: Refactor to apply the best Solution to the instruction too.
+// Right now it applies the best solution only to the Users of that instruction.
 bool WideningIntegerArithmetic::applyChain(
     DenseMap<Value *, WideningIntegerSolutionInfo *> BestSolsUsersCombination) {
   bool Changed = false;
@@ -1841,6 +1854,10 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   return Changed;
 }
 
+// FIXME: extlo creates a SExtInReg.
+// this is a trunc+sext
+// does it make sense to call closure here?
+// closure adds truncs, exts, and SExtInReg again.
 bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
                                            unsigned short TruncatedWidth,
                                            std::queue<Value *> &Worklist) {
