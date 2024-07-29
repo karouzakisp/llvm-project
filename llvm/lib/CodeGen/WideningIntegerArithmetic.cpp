@@ -181,7 +181,8 @@ private:
   // iterates all the uses of an Instruction that is solved
   // and applies the updated Instruction to all the uses.
   // Note that it might need to update the uses of the Instruction also.
-  bool applyChain(DenseMap<Value *, WideningIntegerSolutionInfo *>);
+  bool applyChain(Instruction *Instr,
+                  DenseMap<Value *, WideningIntegerSolutionInfo *>);
 
   std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
@@ -511,7 +512,7 @@ bool WideningIntegerArithmetic::runOnFunction(Function &F) {
   dbgs() << "Applying Solutions ...\n";
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      bool ChangedOnce = applyChain(BestUserSolsPerInst[&I]);
+      bool ChangedOnce = applyChain(&I, BestUserSolsPerInst[&I]);
       if (ChangedOnce) {
         Changed = true;
       }
@@ -790,58 +791,35 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         continue;
         // TODO: Instruction is dead erase it ??
       }
-      for (auto &Use : Instr.uses()) {
-        Value *VUser1 = Use.getUser();
-        VUsers.push_back(VUser1);
-        dbgs() << "Added User --> " << *VUser1 << "\n";
-      }
-      dbgs() << "VUSers size is " << VUsers.size();
-      Value *VUser = VUsers[0];
-      SmallVector<Value *, 4> UsersWithout = VUsers;
-      UsersWithout.erase(UsersWithout.begin());
-      for (WideningIntegerSolutionInfo *Sol : AvailableSolutions[VUser]) {
-        bool AllMatching = true;
-        DenseMap<Value *, WideningIntegerSolutionInfo *> OneCombination;
-        OneCombination[VUser] = Sol;
-        if (UsersWithout.size() == 0) {
-          Combinations.push_back(OneCombination);
-          continue;
-        }
-        for (Value *VUser2 : UsersWithout) {
-          for (WideningIntegerSolutionInfo *Sol2 : AvailableSolutions[VUser2]) {
-            // FIXME: We should check that if the updatedWidths of the users are
-            // Matching then we need the Instruction of the Users to have at
-            // least one Solution of that Width.
-            if (isLegalAndMatching(Sol, Sol2)) {
-              OneCombination[VUser2] = Sol2;
-            } else {
-              AllMatching = false;
-            }
+      Value *VInstr = dyn_cast<Value *>(Instr);
+      for (WideningIntegerSolutionInfo *InstSol : AvailableSolutions[VInstr]) {
+        for (auto &Use : Instr.uses()) {
+          Value *User = Use.getUser();
+          for (WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]) {
+            // if  we find a match of types the cost is 0 else the cost is plus
+            // 1 because we need to insert an extension.
           }
         }
-        if (AllMatching) {
-          Combinations.push_back(OneCombination);
-        }
-        OneCombination.clear();
       }
-      int MinCost = INT_MAX;
-      for (auto ValuesSolsMap : Combinations) {
-        int Sum = 0;
-        for (const auto &It : ValuesSolsMap) {
-          Sum += It.second->getCost();
-        }
-        if (Sum < MinCost) {
-          MinCost = Sum;
-          BestCombination = ValuesSolsMap;
-        }
-      }
-      // TODO: save for each instruction the best Combination
-      // TODO: this Instruction may have Multiple Solutions.
-      // We need to know the best Combination for which Solution of the
-      // Instruction matches.
-      BestUserSolsPerInst[&Instr] = BestCombination;
     }
-  } // end for BasicBlock
+    int MinCost = INT_MAX;
+    for (auto ValuesSolsMap : Combinations) {
+      int Sum = 0;
+      for (const auto &It : ValuesSolsMap) {
+        Sum += It.second->getCost();
+      }
+      if (Sum < MinCost) {
+        MinCost = Sum;
+        BestCombination = ValuesSolsMap;
+      }
+    }
+    // TODO: save for each instruction the best Combination
+    // TODO: this Instruction may have Multiple Solutions.
+    // We need to know the best Combination for which Solution of the
+    // Instruction matches.
+    BestUserSolsPerInst[&Instr] = BestCombination;
+  }
+} // end for BasicBlock
 }
 
 inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Value *V) {
@@ -1621,6 +1599,7 @@ void WideningIntegerArithmetic::replaceAllUsersOfWith(Value *From, Value *To) {
 // TODO: Refactor to apply the best Solution to the instruction too.
 // Right now it applies the best solution only to the Users of that instruction.
 bool WideningIntegerArithmetic::applyChain(
+    Instruction *Instr,
     DenseMap<Value *, WideningIntegerSolutionInfo *> BestSolsUsersCombination) {
   bool Changed = false;
 
