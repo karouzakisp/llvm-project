@@ -42,6 +42,8 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include <algorithm>
+#include <iterator>
 #include <vector>
 
 using namespace llvm;
@@ -159,7 +161,7 @@ private:
   visitNARROW(Instruction *Instr, std::queue<Value *> &Worklist);
   bool visitDROP_EXT(Instruction *Instr, std::queue<Value *> &Worklist);
   bool visitDROP_TRUNC(Instruction *Instr, std::queue<Value *> &Worklist);
-  bool visitEXTLO(Instruction *Instr, unsigned short LowWidth,
+  bool visitEXTLO(Instruction *Instr, SmallVector<unsigned short> LowWidths,
                   std::queue<Value *> &Worklist);
   bool visitSUBSUME_FILL(Instruction *Instr);
   bool visitSUBSUME_INDEX(Instruction *Instr);
@@ -1298,7 +1300,25 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
             unsigned ARightShiftC = C2->getZExtValue();
             if (ARightShiftC == LeftShiftC) {
               // call closure here to get all the LowWidths that are available.
-              return visitEXTLO(Binop, TotalBits - LeftShiftC, Worklist);
+              assert(AvailableSolutions[I].size() > 0);
+              // TODO: test that..!
+              SmallVector<int> AvailableWidthsIndices;
+              SmallVector<unsigned short> AvailableWidths;
+              std::copy_if(AvailableSolutions[I].begin(),
+                           AvailableSolutions[I].end(),
+                           std::back_inserter(AvailableWidthsIndices),
+                           [&](const WideningIntegerSolutionInfo &Sol) {
+                             return TotalBits - Sol.getUpdatedWidth() > 0;
+                           });
+
+              std::transform(AvailableWidthsIndices.begin(),
+                             AvailableWidthsIndices.end(),
+                             AvailableWidths.begin(),
+                             [&](const WideningIntegerSolutionInfo &Sol) {
+                               return TotalBits - Sol.getUpdatedWidth() > 0;
+                             });
+              // TODO: ensure that the AvailableWidths are positive.
+              return visitEXTLO(Binop, AvailableWidths, Worklist);
             }
           }
         }
@@ -1860,7 +1880,13 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   if (auto *I = dyn_cast<Instruction>(N0)) {
     if (I->getOpcode() == Instruction::SExt) {
       // call closure on truncate width.
-      return visitEXTLO(Instr, TruncatedWidth, Worklist);
+      SmallVector<unsigned short> AvailableWidths;
+      std::transform(AvailableSolutions[I].begin(), AvailableSolutions[I].end(),
+                     AvailableWidths.begin(),
+                     [&](const WideningIntegerSolutionInfo &Sol) {
+                       return Sol.getUpdatedWidth();
+                     });
+      return visitEXTLO(Instr, AvailableWidths, Worklist);
     }
   }
   SmallVector<WideningIntegerSolutionInfo *> ExprSolutions =
@@ -1903,9 +1929,9 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   return Changed;
 }
 
-bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
-                                           unsigned short TruncatedWidth,
-                                           std::queue<Value *> &Worklist) {
+bool WideningIntegerArithmetic::visitEXTLO(
+    Instruction *Instr, SmallVector<unsigned short> TruncatedWidths,
+    std::queue<Value *> &Worklist) {
   SolutionSet CalcSols;
   Value *N0 = Instr->getOperand(0);
   Value *N1 = Instr->getOperand(1);
@@ -1938,20 +1964,23 @@ bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
       }
       for (int IntegerSize : IntegerSizes) {
         EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
-        if (IntegerSize <= TruncatedWidth &&
-            TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
-          continue;
-        }
-        unsigned Cost = LeftSol->getCost() + RightSol->getCost() + 1;
-        // add all integers that are bigger to the solutions
-        // FIXME:: TruncatedWidth must be updated to what? leftSol width??
-        // LeftSol can be either a SExt or ASHR
-        WideningIntegerSolutionInfo *Expr = new WIA_EXTLO(
-            Instr->getOpcode(), ExtensionOpc, ExtensionChoice,
-            LeftSol->getFillTypeWidth(), TruncatedWidth, IntegerSize, Cost, VI);
-        Expr->addOperand(LeftSol);
-        if (addNonRedudant(AvailableSolutions[VI], Expr)) {
-          Changed = true;
+        for (auto TruncatedWidth : TruncatedWidths) {
+          if (IntegerSize <= TruncatedWidth &&
+              TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
+            continue;
+          }
+          unsigned Cost = LeftSol->getCost() + RightSol->getCost() + 1;
+          // add all integers that are bigger to the solutions
+          // FIXME:: TruncatedWidth must be updated to what? leftSol width??
+          // LeftSol can be either a SExt or ASHR
+          WideningIntegerSolutionInfo *Expr =
+              new WIA_EXTLO(Instr->getOpcode(), ExtensionOpc, ExtensionChoice,
+                            LeftSol->getFillTypeWidth(), TruncatedWidth,
+                            IntegerSize, Cost, VI);
+          Expr->addOperand(LeftSol);
+          if (addNonRedudant(AvailableSolutions[VI], Expr)) {
+            Changed = true;
+          }
         }
       }
     }
