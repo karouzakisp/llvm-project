@@ -5,6 +5,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -41,6 +42,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include <vector>
 
 using namespace llvm;
 #define PASS_NAME "WideningIntegerArithmetic"
@@ -172,12 +174,16 @@ private:
   // for each of the users of that instruction.
   DenseMap<Instruction *, DenseMap<Value *, WideningIntegerSolutionInfo *>>
       BestUserSolsPerInst;
+  DenseMap<Instruction *, WideningIntegerSolutionInfo *> BestSolPerInst;
   // For every instruction **I** inside the Function
   // it calculates the best combination among the legal
   // solutions of every User of **I**
   void calcBestUserSols(Function &F);
 
   void replaceAllUsersOfWith(Value *From, Value *To);
+
+  // Applies this *Sol* to the Instruction *Instr*
+  bool applySingleSol(Instruction *Instr, WideningIntegerSolutionInfo *Sol);
   // iterates all the uses of an Instruction that is solved
   // and applies the updated Instruction to all the uses.
   // Note that it might need to update the uses of the Instruction also.
@@ -368,10 +374,6 @@ bool WideningIntegerArithmetic::visitInstruction(
     return visitCONSTANT(CI);
   } else {
 
-    dbgs() << "This is not an unknown Value ";
-    if (auto I = dyn_cast<Instruction>(VI)) {
-      assert(0 && "Fix error on ifs.. ");
-    }
     dbgs() << "Careful here Adding Default value" << "\n";
     int FillTypeWidth = getKnownFillTypeWidth(VI);
     auto Sol = new WideningIntegerSolutionInfo(
@@ -779,31 +781,97 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
+// TODO: check if the current version of this function calculates the
+// best solutions that are possible.
+// TODO: modify the algorithm to check the operands of the Users and
+// Instruction.
 void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
-
+  std::queue<Instruction *> workList;
+  // int TotalCost = INT_MAX;
   for (BasicBlock &BB : F) {
     for (Instruction &Instr : BB) {
-      SmallVector<Value *, 4> VUsers;
-      std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>>
-          Combinations;
-      DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;
-      if (Instr.getNumUses() == 0) {
-        continue;
-        // TODO: Instruction is dead erase it ??
+      workList.push(&Instr);
+    }
+  }
+  while (!workList.empty()) {
+    Instruction *Instr = workList.front();
+    workList.pop();
+    int MinCost = INT_MAX;
+    WideningIntegerSolutionInfo *BestInstSol;
+    SmallVector<Value *, 4> VUsers;
+    DenseMap<Instruction *, SmallVector<WideningIntegerSolutionInfo *>>
+        CurrentInstSol;
+    std::vector<DenseMap<Value *, WideningIntegerSolutionInfo *>> Combinations;
+    DenseMap<Value *, WideningIntegerSolutionInfo *> BestCombination;
+    if (Instr->getNumUses() == 0) {
+      continue;
+      // TODO: Instruction is dead erase it ??
+    }
+    auto *VInstr = dyn_cast<Value>(Instr);
+    for (WideningIntegerSolutionInfo *InstSol : AvailableSolutions[VInstr]) {
+      unsigned short InstrUpdatedWidth = InstSol->getUpdatedWidth();
+      DenseMap<Value *, WideningIntegerSolutionInfo *> CandidateUserSols;
+      std::queue<Instruction *> userWorklist;
+      bool AllMatching = true;
+
+      for (auto *User : Instr->users()) {
+        if (auto *UserI = dyn_cast<Instruction>(User))
+          userWorklist.push(UserI);
       }
-      Value *VInstr = dyn_cast<Value *>(Instr);
-      for (WideningIntegerSolutionInfo *InstSol : AvailableSolutions[VInstr]) {
-        for (auto &Use : Instr.uses()) {
-          Value *User = Use.getUser();
-          for (WideningIntegerSolutionInfo *Sol : AvailableSolutions[User]) {
-            // if  we find a match of types the cost is 0 else the cost is plus
-            // 1 because we need to insert an extension.
+
+      while (!userWorklist.empty()) {
+        Instruction *User = userWorklist.front();
+        userWorklist.pop();
+        bool ChangedWidth = false;
+        for (WideningIntegerSolutionInfo *UserSol : AvailableSolutions[User]) {
+          unsigned short UserUpdatedWidth = UserSol->getUpdatedWidth();
+          // 2, possible 3 cases
+          // 1) same Widths cost of Combination is zero
+          // 2) different widths two cases
+          // 3) can we promote one type to another? if yes
+          // cost + 1 if we add an extension.
+          // We may can promote for free.
+          // promot)ed type if we cannot no possible combination
+          // 4) How to handle the truncate?
+          auto *UserI = dyn_cast<Instruction>(User);
+          if (UserUpdatedWidth == InstrUpdatedWidth) {
+            CandidateUserSols[UserI] = UserSol;
+            if (UserUpdatedWidth != UserSol->getWidth())
+              ChangedWidth = true;
+          } else if (isLegalToPromote(UserI) &&
+                     UserSol->getUpdatedWidth() < InstSol->getUpdatedWidth()) {
+            auto *NewUserSol = UserSol;
+            NewUserSol->setUpdatedWidth(InstSol->getUpdatedWidth());
+            CandidateUserSols[UserI] = NewUserSol;
+            if (NewUserSol->getUpdatedWidth() != NewUserSol->getWidth())
+              ChangedWidth = true;
+          } else {
+            AllMatching = false;
           }
         }
+        if (ChangedWidth) {
+          for (auto *UserInstr : User->users()) {
+            if (auto *UserofUserInstr = dyn_cast<Instruction>(UserInstr)) {
+              userWorklist.push(UserofUserInstr);
+            }
+          }
+        }
+
+      } // end userWorklist
+      if (AllMatching) {
+        Combinations.push_back(CandidateUserSols);
+        CurrentInstSol[Instr].push_back(InstSol);
       }
+      // TODO: get for this Combination the Instruction Solution that matches.
+      // Maybe use something when pushing to Combinations?
+    } // End Inst current Sol
+    if (Combinations.size() == 0) {
+      dbgs() << "!!! Couldn't find user combination for Inst " << *Instr
+             << "\n";
     }
-    int MinCost = INT_MAX;
-    for (auto ValuesSolsMap : Combinations) {
+
+    for (auto i = 0U; i < Combinations.size(); i++) {
+      auto ValuesSolsMap = Combinations[i];
       int Sum = 0;
       for (const auto &It : ValuesSolsMap) {
         Sum += It.second->getCost();
@@ -811,15 +879,16 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       if (Sum < MinCost) {
         MinCost = Sum;
         BestCombination = ValuesSolsMap;
+        BestInstSol = CurrentInstSol[Instr][i];
       }
     }
     // TODO: save for each instruction the best Combination
     // TODO: this Instruction may have Multiple Solutions.
     // We need to know the best Combination for which Solution of the
     // Instruction matches.
-    BestUserSolsPerInst[&Instr] = BestCombination;
-  }
-} // end for BasicBlock
+    BestUserSolsPerInst[Instr] = BestCombination;
+    BestSolPerInst[Instr] = BestInstSol;
+  } // end Inst worklist
 }
 
 inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Value *V) {
@@ -1204,8 +1273,6 @@ bool WideningIntegerArithmetic::combineBINOPSols(
            << OpcodesToStr[Opcode] << "\n";
     dbgs() << "So we generate only the default.\n";
     // TODO: should we call closure here?
-    // @Panagiotis I think yes because we need to generate
-    // All the possible solutions for the default sol still.
     createDefaultSol(VBinop);
     return tryClosure(Binop, Worklist, true);
   }
@@ -1217,6 +1284,9 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
 
   Value *V0 = Binop->getOperand(0);
   Value *V1 = Binop->getOperand(1);
+  // shift left x0, x1, x2
+  // arithmetic shift right x3, x0, x2
+  //
   if (Binop->getOpcode() == Instruction::Shl) {
     if (auto *I = dyn_cast<Instruction>(V0)) {
       if (auto *CI = dyn_cast<ConstantInt>(V1)) {
@@ -1227,6 +1297,7 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
           if (auto *C2 = dyn_cast<ConstantInt>(ShlV1)) {
             unsigned ARightShiftC = C2->getZExtValue();
             if (ARightShiftC == LeftShiftC) {
+              // call closure here to get all the LowWidths that are available.
               return visitEXTLO(Binop, TotalBits - LeftShiftC, Worklist);
             }
           }
@@ -1257,10 +1328,6 @@ bool WideningIntegerArithmetic::visitBINOP(Instruction *Binop,
   return combineBINOPSols(Binop, Worklist);
 }
 
-// TODO: U(k_w) = n, where n < oldWidth <= newwidth
-// k_w is the starting point of the SExtInReg
-// how to find it?
-// FIXME: right now we use oldWidth as the starting point..
 std::list<WideningIntegerSolutionInfo *>
 WideningIntegerArithmetic::visitFILL(Instruction *Instr,
                                      std::queue<Value *> &Worklist) {
@@ -1286,14 +1353,15 @@ WideningIntegerArithmetic::visitFILL(Instruction *Instr,
       EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
       // TODO add isTypeLegal for the NewVT??
       // meaning is TLi.isOperationLegal enough for the NewVT?
+      // FIXME: check correctness.
       if (IntegerSize < FillTypeWidth || IntegerSize < (int)Sol->getWidth() ||
           TLI->InstructionOpcodeToISD(Sol->getOpcode()) == ISD::TRUNCATE ||
           !TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
         continue;
       }
       WideningIntegerSolutionInfo *Fill = new WIA_FILL(
-          FILL_INST_OPC, FILL_INST_OPC, ExtensionChoice, FillTypeWidth, Width,
-          IntegerSize, Sol->getCost() + 1, VInstr);
+          FILL_INST_OPC, FILL_INST_OPC, ExtensionChoice, FillTypeWidth,
+          FillTypeWidth, IntegerSize, Sol->getCost() + 1, VInstr);
       Fill->addOperand(Sol);
       Solutions.push_front(Fill);
     }
@@ -1596,30 +1664,9 @@ void WideningIntegerArithmetic::replaceAllUsersOfWith(Value *From, Value *To) {
       InstsToRemove.insert(I);
 }
 
-// TODO: Refactor to apply the best Solution to the instruction too.
-// Right now it applies the best solution only to the Users of that instruction.
-bool WideningIntegerArithmetic::applyChain(
-    Instruction *Instr,
-    DenseMap<Value *, WideningIntegerSolutionInfo *> BestSolsUsersCombination) {
-  bool Changed = false;
+bool WideningIntegerArithmetic::applySingleSol(
+    Instruction *Instr, WideningIntegerSolutionInfo *Sol) {
 
-  for (auto &Combination : BestSolsUsersCombination) {
-    // All users are solved at this point
-    Value *VComb = Combination.first;
-    WideningIntegerSolutionInfo *Sol = Combination.second;
-    if (Sol->getKind() == WIAK_UNKNOWN) {
-      dbgs() << "!!!!!!Best solution has Unknown kind..cannot apply it yet, ";
-      if (auto *I = dyn_cast<Instruction>(VComb)) {
-        dbgs() << "Opcode is " << I->getOpcode() << '\n';
-      } else if (isa<ConstantInt>(VComb)) {
-        dbgs() << "Opcode is Constant" << '\n';
-      } else {
-        dbgs() << "We don't know the opcode .. name is " << VComb->getName()
-               << "\n";
-      }
-      return Changed;
-    }
-  }
   IRBuilder<> Builder{*Ctx};
 
   auto InsertExt = [&](Value *V, Instruction *InsertPt, Type *ExtTy) {
@@ -1688,91 +1735,113 @@ bool WideningIntegerArithmetic::applyChain(
     replaceAllUsersOfWith(V, SExt);
   };
 
+  Value *VInstr = dyn_cast<Value>(Instr);
+  WIAKind SolKind = Sol->getKind();
+  Type *NewTy = getTypeFromInteger(Sol->getUpdatedWidth());
+  unsigned NVTBits = NewTy->getScalarSizeInBits();
+  switch (SolKind) {
+  default:
+    VInstr->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
+    break;
+  case WIAK_WIDEN:
+  case WIAK_WIDEN_GARBAGE: {
+    Instruction *InsertPt = Instr;
+    if (auto *Arg = dyn_cast<Argument>(Instr)) {
+      BasicBlock &BB = Arg->getParent()->front();
+      InsertPt = &*BB.getFirstInsertionPt();
+    }
+    InsertExt(Instr, InsertPt, NewTy);
+    Promoted.insert(Instr);
+    break;
+  }
+  case WIAK_NARROW: {
+    // TODO: needs fixes not complete, switch is diff stores are diff
+    // and maybe more.
+    auto *Trunc = new TruncInst(
+        VInstr, NewTy, Instr->getName() + "." + std::to_string(NVTBits), Instr);
+    dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
+    Instr->replaceAllUsesWith(Trunc); // TODO check if it's needed.
+    break;
+  }
+  case WIAK_DROP_EXT:
+  case WIAK_DROP_LOCOPY:
+  case WIAK_DROP_LOIGNORE: {
+    auto CanDropExtFromAllUsers = [&](Value *Inst) {
+      for (auto *U : Inst->users()) {
+        if (auto *UseI = dyn_cast<Instruction>(U)) {
+          // TODO: how to get the BestUserSol of the Inst
+          // that is user to the Inst we need to update?
+          // TODO: isLegalToPromote is suited for this case?
+          unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
+          if (!isLegalToPromote(UseI) ||
+              UseFillTypeWidth > Sol->getUpdatedWidth()) {
+            // TODO: Maybe count users that we cannot promote or drop
+            // the extension and use that information? If we can drop
+            // the extension to most users maybe we can create another
+            // extension for the remaining users??
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+    dbgs() << " sols Size of op0 is "
+           << AvailableSolutions[Instr->getOperand(0)].size() << "\n";
+    Value *N0 = Instr->getOperand(0);
+    // TODO: BestSol maybe not be the AvailableSolutions[Op0][0]
+    WideningIntegerSolutionInfo *BestSol = nullptr;
+    if (auto *OP0 = dyn_cast<Instruction>(Instr->getOperand(0))) {
+      auto It = BestSolPerInst.find(OP0);
+      auto *Sol = It->second;
+      BestSol = Sol;
+    }
+    if (CanDropExtFromAllUsers(Instr)) {
+      replaceAllUsersOfWith(Instr, N0);
+      if (BestSol != nullptr)
+        N0->mutateType(getTypeFromInteger(BestSol->getUpdatedWidth()));
+      InstsToRemove.insert(Instr);
+    }
+  } break;
+  }
+  // we need to have all the Combinations of the LegalUsersSolutions..
+  return true;
+}
+
+// TODO: Refactor to apply the best Solution to the instruction too.
+// Right now it applies the best solution only to the Users of that
+// instruction.
+bool WideningIntegerArithmetic::applyChain(
+    Instruction *Instr,
+    DenseMap<Value *, WideningIntegerSolutionInfo *> BestSolsUsersCombination) {
+  bool Changed = false;
+
   for (auto &Combination : BestSolsUsersCombination) {
     // All users are solved at this point
     Value *VComb = Combination.first;
-    Instruction *NewVI = dyn_cast<Instruction>(VComb);
     WideningIntegerSolutionInfo *Sol = Combination.second;
-    Value *NewV = VComb;
-    WIAKind SolKind = Sol->getKind();
-    Type *NewTy = getTypeFromInteger(Sol->getUpdatedWidth());
-    unsigned NVTBits = NewTy->getScalarSizeInBits();
-    switch (SolKind) {
-    default:
-      VComb->mutateType(getTypeFromInteger(Sol->getUpdatedWidth()));
-      break;
-    case WIAK_WIDEN:
-    case WIAK_WIDEN_GARBAGE: {
-      Instruction *InsertPt = NewVI;
-      if (auto *Arg = dyn_cast<Argument>(NewVI)) {
-        BasicBlock &BB = Arg->getParent()->front();
-        InsertPt = &*BB.getFirstInsertionPt();
-      }
-      InsertExt(NewVI, InsertPt, NewTy);
-      Promoted.insert(NewVI);
-      break;
-    }
-    case WIAK_NARROW: {
-      // TODO: needs fixes not complete, switch is diff stores are diff
-      // and maybe more.
-      auto *Trunc = new TruncInst(
-          NewV, NewTy, VComb->getName() + "." + std::to_string(NVTBits), NewVI);
-      dbgs() << "Inserted Trunc, Trying to replaceAllUses...";
-      VComb->replaceAllUsesWith(Trunc); // TODO check if it's needed.
-      break;
-    }
-    case WIAK_DROP_EXT:
-    case WIAK_DROP_LOCOPY:
-    case WIAK_DROP_LOIGNORE: {
-      auto CanDropExtFromAllUsers = [&](Value *Inst) {
-        for (auto *U : Inst->users()) {
-          if (auto *UseI = dyn_cast<Instruction>(U)) {
-            // TODO: how to get the BestUserSol of the Inst
-            // that is user to the Inst we need to update?
-            // TODO: isLegalToPromote is suited for this case?
-            unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
-            if (!isLegalToPromote(UseI) ||
-                UseFillTypeWidth > Sol->getUpdatedWidth()) {
-              // TODO: Maybe count users that we cannot promote or drop
-              // the extension and use that information? If we can drop
-              // the extension to most users maybe we can create another
-              // extension for the remaining users??
-              return false;
-            }
-          }
-        }
-        return true;
-      };
-      // TODO: Check if the first Operand is always a User?
-      if (auto Search = BestSolsUsersCombination.find(NewVI->getOperand(0));
-          Search != BestSolsUsersCombination.end()) {
-        Value *N0 = Search->first;
-        WideningIntegerSolutionInfo *BestSol = Search->second;
-        if (CanDropExtFromAllUsers(NewVI)) {
-          // TODO: do we need to mutate the type if we drop the extension?
-          replaceAllUsersOfWith(NewVI, N0);
-          InstsToRemove.insert(NewVI);
-        }
+    if (Sol->getKind() == WIAK_UNKNOWN) {
+      dbgs() << "!!!!!!Best solution has Unknown kind..cannot apply it yet, ";
+      if (auto *I = dyn_cast<Instruction>(VComb)) {
+        dbgs() << "Opcode is " << I->getOpcode() << '\n';
+      } else if (isa<ConstantInt>(VComb)) {
+        dbgs() << "Opcode is Constant" << '\n';
       } else {
-        // Droping extension.
-        dbgs() << " sols Size of op0 is "
-               << AvailableSolutions[NewVI->getOperand(0)].size() << "\n";
-        Value *N0 = NewVI->getOperand(0);
-        // TODO: BestSol maybe not be the AvailableSolutions[Op0][0]
-        WideningIntegerSolutionInfo *BestSol =
-            AvailableSolutions[NewVI->getOperand(0)][0];
-        if (CanDropExtFromAllUsers(NewVI)) {
-          replaceAllUsersOfWith(NewVI, N0);
-          InstsToRemove.insert(NewVI);
-        }
+        dbgs() << "We don't know the opcode .. name is " << VComb->getName()
+               << "\n";
       }
-      break;
-    }
-      assert(isa<Instruction>(NewV) || isa<ConstantInt>(NewV));
-      // we need to have all the Combinations of the LegalUsersSolutions..
-      Changed = true;
+      return Changed;
     }
   }
+
+  for (auto &Combination : BestSolsUsersCombination) {
+    Instruction *UserI = dyn_cast<Instruction>(Combination.first);
+    WideningIntegerSolutionInfo *BestUserSol = Combination.second;
+    applySingleSol(UserI, BestUserSol); // All users are solved at this point
+  }
+  auto SolIt = BestSolPerInst.find(Instr);
+
+  assert(SolIt != BestSolPerInst.end());
+  applySingleSol(Instr, SolIt->second);
   return Changed;
 }
 
@@ -1780,7 +1849,7 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
                                                 std::queue<Value *> &Worklist) {
 
   assert(Instr->getOpcode() == Instruction::Trunc &&
-         "Not an extension to drop here");
+         "Not an truncation to drop here");
 
   // TODO check can an operand of Truncation be a ConstantInt?
   // does it need to be extended? or we can be sure that N0 is never a
@@ -1790,6 +1859,7 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   unsigned short TruncatedWidth = Instr->getType()->getScalarSizeInBits();
   if (auto *I = dyn_cast<Instruction>(N0)) {
     if (I->getOpcode() == Instruction::SExt) {
+      // call closure on truncate width.
       return visitEXTLO(Instr, TruncatedWidth, Worklist);
     }
   }
@@ -1833,10 +1903,6 @@ bool WideningIntegerArithmetic::visitDROP_TRUNC(Instruction *Instr,
   return Changed;
 }
 
-// FIXME: extlo creates a SExtInReg.
-// this is a trunc+sext
-// does it make sense to call closure here?
-// closure adds truncs, exts, and SExtInReg again.
 bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
                                            unsigned short TruncatedWidth,
                                            std::queue<Value *> &Worklist) {
@@ -1889,9 +1955,6 @@ bool WideningIntegerArithmetic::visitEXTLO(Instruction *Instr,
         }
       }
     }
-  }
-  if (Changed) {
-    return closure(Instr, Worklist);
   }
   return false;
 }
