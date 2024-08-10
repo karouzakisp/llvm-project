@@ -9,13 +9,13 @@
 
 namespace llvm {
 
+#define FILL_INST_OPC 66
 #define CONSTANT_INT_OPC 67
-#define FILL_INST_OPC 68
-#define UNKNOWN_OPC 69
+#define UNKNOWN_OPC 68
 
 class Value;
 
-std::string OpcodesToStr[69] = {
+std::string OpcodesToStr[70] = {
     "Empty Instr",
     "Return",
     "BranchInst",
@@ -85,6 +85,7 @@ std::string OpcodesToStr[69] = {
     "FillInst",
     "ConstantInt",
     "UnknownOpc",
+    "UnknownOpc",
 };
 
 enum IntegerFillType { SIGN = 0, ZEROS, ANYTHING, UNDEFINED };
@@ -148,7 +149,7 @@ protected:
 
 private:
   WIAKind Kind;
-  // TODO can a Value have more than 4 Operands?
+  // TODO: can a Value have more than 4 Operands?
   SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
 
 public:
@@ -197,6 +198,7 @@ public:
 
   short int getCost(void) const { return Cost; }
   void setCost(short int Cost_) { Cost = Cost_; }
+  void incrementCost() { ++Cost; }
   IntegerFillType getFillType(void) const { return FillType; }
   void setFillType(IntegerFillType FillType_) { FillType = FillType_; }
 
@@ -243,10 +245,20 @@ public:
     int c1 = Cost;
     int n2 = b.getFillTypeWidth();
     int c2 = b.getCost();
-
+    int w1 = UpdatedWidth;
+    int w2 = b.getUpdatedWidth();
+    int FillType1 = FillType;
+    int FillType2 = b.getFillType();
     if ((*this) == b) {
       return -1;
     }
+    if (w1 != w2 || FillType1 != FillType2 ||
+        b.getValue() != this->getValue()) {
+      return 0;
+    }
+
+    // if w1 != w2 or expression1 != expression2 or fillType_A != fillType_B
+    // return 0;
 
     if (n1 >= n2 && c1 > c2)
       return 1;
