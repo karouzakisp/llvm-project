@@ -110,7 +110,8 @@ enum WIAKind {
   WIAK_LIT,
   WIAK_LOAD,
   WIAK_RET,
-  WIAK_UNKNOWN
+  WIAK_UNKNOWN,
+  WIAK_NOOP
 };
 
 std::vector<std::string> WIAK_NAMES_VEC = {
@@ -120,7 +121,7 @@ std::vector<std::string> WIAK_NAMES_VEC = {
     "WIAK_DROP_LOIGNORE", "WIAK_EXTLO",    "WIAK_SUBSUME_FILL",
     "WIAK_SUBSUME_INDEX", "WIAK_NATURAL",  "WIAK_STORE",
     "WIAK_CONSTANT",      "WIAK_LIT",      "WIAK_LOAD",
-    "WIAK_UNKNOWN"};
+    "WIAK_UNKNOWN",       "WIAK_NOOP"};
 
 // This class is used to specify all the arguments that a solution
 // of WideningIntegerArithmetic class requires.
@@ -664,6 +665,28 @@ public:
   static inline bool classof(WideningIntegerSolutionInfo const *Base) {
     switch (Base->getKind()) {
     case WIAK_CONSTANT:
+      return true;
+    default:
+      return false;
+    }
+  }
+};
+
+class WIA_NOOP : public WideningIntegerSolutionInfo {
+public:
+  WIA_NOOP() {}
+  ~WIA_NOOP() {}
+  WIA_NOOP(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
+           unsigned short FillTypeWidth_, unsigned short Width_,
+           unsigned short UpdatedWidth_, short int Cost_, Value *V_)
+      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
+            UpdatedWidth_, Cost_, WIAK_NOOP, V_) {}
+
+  static inline bool classof(WIA_NOOP const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
+    switch (Base->getKind()) {
+    case WIAK_NOOP:
       return true;
     default:
       return false;
