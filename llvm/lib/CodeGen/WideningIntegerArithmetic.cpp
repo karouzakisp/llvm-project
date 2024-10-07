@@ -32,6 +32,7 @@
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
@@ -81,10 +82,9 @@ public:
   bool runOnFunction(Function &F) override;
   typedef struct GlobalSolData {
     unsigned TotalCost;
-    unsigned UpdatedWidth;
 
   } GlobalSolData_t;
-  using GlobalSol = SmallVector<WideningIntegerSolutionInfo *, 16>;
+  using GlobalSols = SmallVector<WideningIntegerSolutionInfo *, 16>;
   using isSolvedMap = DenseMap<Value *, bool>;
   using SolutionSet = SmallVector<WideningIntegerSolutionInfo *>;
   using SolutionSetParam = SmallVectorImpl<WideningIntegerSolutionInfo *>;
@@ -124,7 +124,7 @@ private:
   // Every Instruction may have multipe global Solutions.
   // Each global Solution has the totalCost, the solution for every value
   // that is related to the instruction, operands and users
-  DenseMap<Instruction *, DenseMap<GlobalSolData, GlobalSol>> SolsPerInst;
+  DenseMap<Instruction *, SmallVector<std::pair<SolutionSet, unsigned>>> SolsPerInst;
 
   DenseMap<unsigned, UnaryFillTypeSet> UnaryFillTypesMap;
   DenseMap<unsigned, FillTypeSet> FillTypesMap;
@@ -196,10 +196,10 @@ private:
   // solutions of every User of **I**
   void calcBestUserSols(Function &F);
 
-  inline bool updateUsers(
+  inline bool checkUserSol(
       Instruction *User, WideningIntegerSolutionInfo *UserSol,
       Instruction *Instr, WideningIntegerSolutionInfo *InstSol,
-      GlobalSolData_t &InstMetaData, bool &AllMatchingWidth, bool &ChangedWidth,
+      GlobalSolData_t &InstMetaData, bool &ChangedWidth,
       DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols);
 
   inline void updateOperands(
@@ -900,57 +900,54 @@ inline void WideningIntegerArithmetic::updateOperands(
   }
 }
 
-inline bool WideningIntegerArithmetic::updateUsers(
+inline bool WideningIntegerArithmetic::checkUserSol(
     Instruction *User, WideningIntegerSolutionInfo *UserSol, Instruction *Instr,
     WideningIntegerSolutionInfo *InstSol, GlobalSolData_t &InstMetaData,
-    bool &AllMatchingWidth, bool &ChangedWidth,
+    bool &ChangedWidth,
     DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols) {
   unsigned short UserUpdatedWidth = UserSol->getUpdatedWidth();
-  using GlobalSol = SmallVector<WideningIntegerSolutionInfo *, 16>;
-  DenseMap<Instruction *, DenseMap<GlobalSolData, GlobalSol>> SolsPerInst;
   // 2, possible 3 cases
   // 1) same Widths cost of Combination is zero
   // 2) different widths two cases
   // 3) can we promote one type to another? if yes
   // cost + 1 if we add an extension.
   // We may can promote for free.
-  // promot)ed type if we cannot no possible combination
+  // promoted type if we cannot no possible combination
   // 4) How to handle the truncate?
   auto CurrentInstWidth = InstSol->getUpdatedWidth();
   SmallVector<WideningIntegerSolutionInfo *, 16> UserSols;
-  auto InstUserOpSols = SolsPerInst[Instr];
   auto *UserI = dyn_cast<Instruction>(User);
   WideningIntegerSolutionInfo *NewUserSol;
-  bool UserSolCreated = false;
+  bool FoundMatch = false;
+
   if (UserUpdatedWidth == CurrentInstWidth) {
     CandidateUserSols[UserI] = UserSol;
     UserSols.push_back(UserSol);
-    AllMatchingWidth = true;
     if (UserUpdatedWidth != UserSol->getWidth()) {
       ChangedWidth = true;
       InstMetaData.TotalCost += UserSol->getCost();
     }
+    FoundMatch = true;
   } else if (isLegalToPromote(UserI) &&
              UserSol->getUpdatedWidth() < CurrentInstWidth) {
     NewUserSol = UserSol;
-    UserSolCreated = true;
     NewUserSol->setUpdatedWidth(CurrentInstWidth);
     UserSols.push_back(NewUserSol);
     CandidateUserSols[UserI] = NewUserSol;
-    AllMatchingWidth = true;
+    FoundMatch = true;
     // dbgs() << "Found All MatchingWidth!!! AllMatchingWidth -->"
     //     << AllMatchingWidth << "\n";
     if (NewUserSol->getUpdatedWidth() != NewUserSol->getWidth())
       ChangedWidth = true;
   } else {
+    FoundMatch = false;
     // dbgs() << "Didnt found Match for InstrWidth " << CurrentInstWidth <<
     // "\n"; dbgs() << "User-->  " << *UserI << "User Width " <<
     // UserUpdatedWidth
     // << "\n";
     // dbgs() << "AllMatching is " << AllMatchingWidth << "\n";
   }
-  InstUserOpSols.insert(std::make_pair(InstMetaData, UserSols));
-  return UserSolCreated;
+  return FoundMatch;
 }
 
 // TODO: check if the current version of this function calculates the
@@ -960,11 +957,11 @@ inline bool WideningIntegerArithmetic::updateUsers(
 void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
   std::queue<Instruction *> workList;
   // int TotalCost = INT_MAX;
-  for (BasicBlock &BB : F) {
-    for (Instruction &Instr : BB) {
-      workList.push(&Instr);
-    }
+  for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
+    workList.push(&*I);
   }
+
+  // for debugging purposes
   SmallVector<Instruction *> usersEncountered;
   while (!workList.empty()) {
     Instruction *Instr = workList.front();
@@ -998,18 +995,18 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
           continue;
         }
         auto InstOpSols = AvailableSolutions[InstOp];
-        SmallVector<unsigned short> AvailableOpWidths(InstOpSols.size());
+        bool FoundMatchingOp = false;
         // TODO: if an Operand is an Instruction with uses, probably we need to
         // check their solutions and the users and so on..?
         for (auto *Sol : AvailableSolutions[InstOp]) {
-          AvailableOpWidths.push_back(Sol->getUpdatedWidth());
-          auto *It = std::find(AvailableOpWidths.begin(),
-                               AvailableOpWidths.end(), InstrUpdatedWidth);
-          if (It != AvailableOpWidths.end()) {
+          if(Sol->getUpdatedWidth() == InstrUpdatedWidth){
+            AvailableOpWidths.push_back(Sol->getUpdatedWidth());
             ExtraCost += Sol->getCost();
-          } else {
-            DiscardSolution = true;
+            FoundMatchingOp = true;
           }
+        }
+        if (!FoundMatchingOp) {
+          DiscardSolution = true;
         }
       }
       if (DiscardSolution) {
@@ -1031,7 +1028,8 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       }
       GlobalSolData_t InstMetaData;
       InstMetaData.UpdatedWidth = InstSol->getUpdatedWidth();
-      InstMetaData.TotalCost = InstSol->getCost();
+      unsigned TotalCost = InstSol->getCost();
+      SmallSet<Instrucion*> UserSols;
       // current inst Sol width
       while (!userWorklist.empty()) {
         Instruction *User = userWorklist.front();
@@ -1040,16 +1038,26 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         bool ChangedWidth = false;
         bool AllMatchingWidth = false;
         for (WideningIntegerSolutionInfo *UserSol : AvailableSolutions[User]) {
-          bool UserSolCreated =
-              updateUsers(User, UserSol, Instr, InstSol, InstMetaData,
-                          AllMatchingWidth, ChangedWidth, CandidateUserSols);
+          // TODO: maybe we can check if at least one solution was legal
+          // check if the AllMatchingWidth is equivalent. 
+          bool isLegal =
+              checkUserSol(User, UserSol, Instr, InstSol, InstMetaData,
+                          ChangedWidth, CandidateUserSols);
+          if(isLegal){
+            UserSols.push_back(UserSol);
+            TotalCost += UserSol->getCost();
+            break;
+            // TODO: If we don't break we might have 2 or more UserSols for a 
+            // single sequence of unique Instruction solutions for users operands etc.
+            // We need to create another sequence for that. 
+          }
           if (ChangedWidth) {
             // TODO: update operands with new Approach.
             updateOperands(User, CandidateUserSols[User], CandidateUserSols,
                            MatchingForAllOps);
           }
         }
-        if (!AllMatchingWidth) {
+        if (!UserSols.size() == 0) {
           dbgs() << "Didn't found suitable solution for --> \n";
           User->dump();
           AllMatching = false;
@@ -1073,6 +1081,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         dbgs() << "Found a Combination..!\n";
         Combinations.push_back(CandidateUserSols);
         CurrentInstSol[Instr].push_back(InstSol);
+        SolsPerInst[Instr].push_back(std::pair(UsersSols, TotalCost));
       } else if (AllMatching == 0 || MatchingForAllOps == 0) {
         dbgs() << "AllMatching for Users is " << AllMatching << "\n";
         dbgs() << "MatchingForAllOps for Operands is " << MatchingForAllOps
