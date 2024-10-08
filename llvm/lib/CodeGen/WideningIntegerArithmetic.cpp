@@ -202,7 +202,7 @@ private:
       GlobalSolData_t &InstMetaData, bool &ChangedWidth,
       DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols);
 
-  inline void updateOperands(
+  inline void checkOperand(
       Instruction *User, WideningIntegerSolutionInfo *UserSol,
       DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols,
       bool &MatchingForAllOps);
@@ -838,46 +838,52 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
-inline void WideningIntegerArithmetic::updateOperands(
-    Instruction *User, WideningIntegerSolutionInfo *UserSol,
+inline bool WideningIntegerArithmetic::checkOperands(
+    Instruction *I, WideningIntegerSolutionInfo *InstSol,
     DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols,
     bool &MatchingForAllOps) {
 
-  auto *UserI = dyn_cast<Instruction>(User);
-  if (isa<SwitchInst>(UserI)) {
+  if (isa<SwitchInst>(I)) {
     dbgs() << "Found Switch User.." << "\n";
   }
 
-  for (unsigned i = 0U, e = UserI->getNumOperands(); i < e; ++i) {
-    Value *Op = UserI->getOperand(i);
-    if (isa<SwitchInst>(UserI) && !isa<ConstantInt>(Op)) {
+  for (unsigned i = 0U, e = I->getNumOperands(); i < e; ++i) {
+    Value *Op = I->getOperand(i);
+    if (isa<SwitchInst>(I) && !isa<ConstantInt>(Op)) {
       dbgs() << "CHECK if correct Ignoring Operand --> " << *Op << "\n";
       continue;
     }
     auto OpSols = AvailableSolutions[Op];
     SmallVector<unsigned short> AvailableOpWidths(OpSols.size());
     bool FoundMatchingSol = false;
-    for (auto *Sol : AvailableSolutions[Op]) {
+    auto InstrUpdatedWidth = Inst->getUpdatedWidth();
+    for (auto *OpSol : AvailableSolutions[Op]) {
       AvailableOpWidths.push_back(Sol->getUpdatedWidth());
+      if(OpSol->getUpdatedWidth() == InstrUpdatedWidth()){
+        FoundMatchingSol = true;
+      }else{
+        if(auto OpI = dyn_cast<Instruction>(Op) ){
+          if((isLegalToPromote(OpI) && 
+              getIntegerFromType(OpI->getType()) < InstrUpdatedWidth) 
+              ) {
+            auto NewOpSol = OpSol;
+            NewOpSol->setUpdatedWidth(InstrUpdatedWidth);
+            FoundMatchingSol = true;
+          }
+        }
+        else if(isa<ConstantInt>(Op)){
+          // TODO: what if the UpdatedWidth of Instr is lower than before?
+          // maybe the constant doesn't fit in that specific bitWidth? 
+          auto NewOpSol = OpSol;
+          NewOpSol->setUpdatedWidth(InstrUpdatedWidth);
+          FoundMatchingSol = true;
+        }
+      }
     }
     Type *OpType = Op->getType();
-    auto UpdatedWidth = UserSol->getUpdatedWidth();
-    if (OpType != getTypeFromInteger(UpdatedWidth)) {
-      auto *It = std::find(AvailableOpWidths.begin(), AvailableOpWidths.end(),
-                           UserSol->getUpdatedWidth());
-      // TODO: maybe add isLegalToPromote and check the solutions if they are
-      // correct.
-      if (It == AvailableOpWidths.end()) {
-        if (isa<ConstantInt>(Op)) {
-          dbgs() << "ConstantInt doesn't match..!\n";
-        }
-      } else {
+    auto UpdatedWidth = InstSol->getUpdatedWidth();
         // we increment the cost because we need to insert a ext or
         // trunc here.
-        FoundMatchingSol = true;
-        UserSol->incrementCost();
-        CandidateUserSols[UserI] = UserSol;
-      }
     } else {
       FoundMatchingSol = true;
     }
@@ -925,7 +931,6 @@ inline bool WideningIntegerArithmetic::checkUserSol(
     UserSols.push_back(UserSol);
     if (UserUpdatedWidth != UserSol->getWidth()) {
       ChangedWidth = true;
-      InstMetaData.TotalCost += UserSol->getCost();
     }
     FoundMatch = true;
   } else if (isLegalToPromote(UserI) &&
@@ -989,6 +994,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       unsigned short InstrUpdatedWidth = InstSol->getUpdatedWidth();
       unsigned short ExtraCost = 0;
       bool DiscardSolution = false;
+      DenseMap<Value*, SolutionSet> OperandSols;
       for (unsigned i = 0U, e = Instr->getNumOperands(); i < e; ++i) {
         Value *InstOp = Instr->getOperand(i);
         if (IsSwitch(Instr->getOpcode()) && !isa<ConstantInt>(InstOp)) {
@@ -1003,6 +1009,13 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
             AvailableOpWidths.push_back(Sol->getUpdatedWidth());
             ExtraCost += Sol->getCost();
             FoundMatchingOp = true;
+            OperandSols[InstOp].push_back(Sol);
+            break;
+            // NOTE: if we find a way to represent a combination of sols we can solve
+            // the below problem. 
+            // TODO: If we don't break we might have 2 or more OperandSols for a 
+            // single sequence of unique Instruction solutions for users operands etc.
+            // We need to create another sequence for that. 
           }
         }
         if (!FoundMatchingOp) {
@@ -1029,7 +1042,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       GlobalSolData_t InstMetaData;
       InstMetaData.UpdatedWidth = InstSol->getUpdatedWidth();
       unsigned TotalCost = InstSol->getCost();
-      SmallSet<Instrucion*> UserSols;
+      DenseMap<Instruction*, SolutionSet> UserSols;
       // current inst Sol width
       while (!userWorklist.empty()) {
         Instruction *User = userWorklist.front();
@@ -1044,16 +1057,18 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
               checkUserSol(User, UserSol, Instr, InstSol, InstMetaData,
                           ChangedWidth, CandidateUserSols);
           if(isLegal){
-            UserSols.push_back(UserSol);
+            UserSols[User].push_back(UserSol);
             TotalCost += UserSol->getCost();
             break;
+            // NOTE: if we find a way to represent a combination of sols we can solve
+            // the below problem. 
             // TODO: If we don't break we might have 2 or more UserSols for a 
             // single sequence of unique Instruction solutions for users operands etc.
             // We need to create another sequence for that. 
           }
           if (ChangedWidth) {
             // TODO: update operands with new Approach.
-            updateOperands(User, CandidateUserSols[User], CandidateUserSols,
+            checkOperands(User, CandidateUserSols[User], CandidateUserSols,
                            MatchingForAllOps);
           }
         }
@@ -1667,6 +1682,20 @@ inline Type *WideningIntegerArithmetic::getTypeFromInteger(int Integer) {
     break;
   }
   return Ty;
+}
+
+inline int *WideningIntegerArithmetic::getIntegerFromType(Type *ty) {
+  if(auto *IntTy = dyn_cast<IntegerType>(Ty)){
+    switch (IntTy->getBitWidth()) {
+    case 8:  return 8;
+    case 16: return 16;
+    case 32: return 32;
+    case 64: return 64;
+    default: return 0;
+    }
+  }else{
+    assert(0 && "Called getIntegerFromType that is not IntTy");
+  }
 }
 
 inline unsigned
