@@ -121,15 +121,6 @@ private:
 
   TargetWidthsMap TargetWidths;
 
-  struct InstSolutions {
-    SolutionSet InstSols; 
-    SmallVector<std::pair<SolutionSet, unsigned>> OperandSols;
-    SmallVector<std::pair<SolutionSet, unsigned>> UserSols;
-  };
-  // Every Instruction may have multipe global Solutions.
-  // Each global Solution has the totalCost, the solution for every value
-  // that is related to the instruction, operands and users
-  DenseMap<Instruction *, InstSolutions> SolsPerInst;
 
   DenseMap<unsigned, UnaryFillTypeSet> UnaryFillTypesMap;
   DenseMap<unsigned, FillTypeSet> FillTypesMap;
@@ -190,6 +181,19 @@ private:
   bool solveSimplePhis(Instruction *Instr,
                        SmallVector<Value *, 32> IncomingValues,
                        std::queue<Value *> &Worklist);
+  
+  struct InstSolutions {
+    SolutionSet InstSols; 
+    DenseMap<Value*, SolutionSet> OperandSols;
+    DenseMap<Instruction*, SolutionSet> UserSols;
+  };
+  // Returns true if it finds matching Solutions for every User and Operand
+  // for every Instruction in F. 
+  bool generateOpsAndUserSols(Function &F); 
+  // Every Instruction may have multipe global Solutions.
+  // Each global Solution has the totalCost, the solution for every value
+  // that is related to the instruction, operands and users
+  DenseMap<Instruction *, InstSolutions> SolsPerInst;
 
   // A map that holds for every instruction the best solution
   // for each of the users of that instruction.
@@ -201,15 +205,16 @@ private:
   // solutions of every User of **I**
   void calcBestUserSols(Function &F);
 
+  void calcBestUserSols_v2(Function &F);
+
   inline bool checkUserSol(
       Instruction *User, WideningIntegerSolutionInfo *UserSol,
       Instruction *Instr, WideningIntegerSolutionInfo *InstSol,
-      bool &ChangedWidth,
-      DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols);
+      bool &ChangedWidth);
 
-  inline bool checkOperands(
-      Instruction *User, WideningIntegerSolutionInfo *UserSol,
-      DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols);
+  inline bool updateOperands(
+      Instruction *User, WideningIntegerSolutionInfo *UserSol, 
+      DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols); 
 
   void replaceAllUsersOfWith(Value *From, Value *To);
 
@@ -246,7 +251,7 @@ private:
   void initOperatorsFillTypes();
   void printInstrSols(Value *V);
   inline Type *getTypeFromInteger(int Integer);
-  inline int *getIntegerFromType(Type *ty);
+  inline int getIntegerFromType(Type *ty);
   inline short int getKnownFillTypeWidth(Value *V);
 
   bool inline isLegalAndMatching(WideningIntegerSolutionInfo *Sol1,
@@ -843,27 +848,33 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
-inline bool WideningIntegerArithmetic::checkOperands(
-    Instruction *I, WideningIntegerSolutionInfo *InstSol,
-    DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols) {
+inline bool WideningIntegerArithmetic::updateOperands(
+    Instruction *I, WideningIntegerSolutionInfo *InstSol, 
+    DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols) {
 
   if (isa<SwitchInst>(I)) {
     dbgs() << "Found Switch User.." << "\n";
   }
   bool MatchingForAllOps = true;
-  SolutionSet OperandSols;
+  DenseMap<Value*, SolutionSet> OperandSols;
   unsigned totalCost = 0;
   for (unsigned i = 0U, e = I->getNumOperands(); i < e; ++i) {
     Value *Op = I->getOperand(i);
+    Type *OpTy = Op->getType();
     if (isa<SwitchInst>(I) && !isa<ConstantInt>(Op)) {
       dbgs() << "CHECK if correct Ignoring Operand --> " << *Op << "\n";
+      continue;
+    }
+    // TODO: what to do with operands that are not Int?
+    // We do not have any solutions for them. 
+    if(!OpTy->isIntOrIntVectorTy()){
       continue;
     }
     auto OpSols = AvailableSolutions[Op];
     bool FoundMatchingSol = false;
     auto InstrUpdatedWidth = InstSol->getUpdatedWidth();
     for (auto *OpSol : AvailableSolutions[Op]) {
-      if(OpSol->getUpdatedWidth() == InstrUpdatedWidth()){
+      if(OpSol->getUpdatedWidth() == InstrUpdatedWidth){
         FoundMatchingSol = true;
       }else{
         if(auto OpI = dyn_cast<Instruction>(Op) ){
@@ -891,7 +902,8 @@ inline bool WideningIntegerArithmetic::checkOperands(
       // we increment the cost because we need to insert a ext or
       // trunc here.
       if(FoundMatchingSol){
-        OperandSols.push_back(OpSol);
+        CandidateSols[Op] = OpSol;
+        OperandSols[Op].push_back(OpSol);
         totalCost += OpSol->getCost();
       }
     }
@@ -909,7 +921,7 @@ inline bool WideningIntegerArithmetic::checkOperands(
       MatchingForAllOps = false;
     } else {
       
-      SolsPerInst[I].OperandSols.push_back(std::pair(OperandSols, totalCost));
+      //SolsPerInst[I].OperandSols.push_back(OperandSols);
       dbgs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 " FOUND MATCHING SOL.\n";
     }
@@ -920,8 +932,7 @@ inline bool WideningIntegerArithmetic::checkOperands(
 inline bool WideningIntegerArithmetic::checkUserSol(
     Instruction *User, WideningIntegerSolutionInfo *UserSol, Instruction *Instr,
     WideningIntegerSolutionInfo *InstSol,
-    bool &ChangedWidth,
-    DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateUserSols) {
+    bool &ChangedWidth) {
   unsigned short UserUpdatedWidth = UserSol->getUpdatedWidth();
   // 2, possible 3 cases
   // 1) same Widths cost of Combination is zero
@@ -938,7 +949,6 @@ inline bool WideningIntegerArithmetic::checkUserSol(
   bool FoundMatch = false;
 
   if (UserUpdatedWidth == CurrentInstWidth) {
-    CandidateUserSols[UserI] = UserSol;
     UserSols.push_back(UserSol);
     if (UserUpdatedWidth != UserSol->getWidth()) {
       ChangedWidth = true;
@@ -949,7 +959,6 @@ inline bool WideningIntegerArithmetic::checkUserSol(
     NewUserSol = UserSol;
     NewUserSol->setUpdatedWidth(CurrentInstWidth);
     UserSols.push_back(NewUserSol);
-    CandidateUserSols[UserI] = NewUserSol;
     FoundMatch = true;
     // dbgs() << "Found All MatchingWidth!!! AllMatchingWidth -->"
     //     << AllMatchingWidth << "\n";
@@ -966,11 +975,7 @@ inline bool WideningIntegerArithmetic::checkUserSol(
   return FoundMatch;
 }
 
-// TODO: check if the current version of this function calculates the
-// best solutions that are possible.
-// TODO: modify the algorithm to check the operands of the Users and
-// Instruction.
-void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
+void WideningIntegerArithmetic::calcBestUserSols(Function &F){ 
   std::queue<Instruction *> workList;
   // int TotalCost = INT_MAX;
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
@@ -1005,42 +1010,17 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       unsigned short InstrUpdatedWidth = InstSol->getUpdatedWidth();
       unsigned short ExtraCost = 0;
       bool DiscardSolution = false;
-      DenseMap<Value*, SolutionSet> OperandSols;
-      for (unsigned i = 0U, e = Instr->getNumOperands(); i < e; ++i) {
-        Value *InstOp = Instr->getOperand(i);
-        if (IsSwitch(Instr->getOpcode()) && !isa<ConstantInt>(InstOp)) {
-          continue;
-        }
-        auto InstOpSols = AvailableSolutions[InstOp];
-        bool FoundMatchingOp = false;
-        // TODO: if an Operand is an Instruction with uses, probably we need to
-        // check their solutions and the users and so on..?
-        for (auto *Sol : AvailableSolutions[InstOp]) {
-          if(Sol->getUpdatedWidth() == InstrUpdatedWidth){
-            ExtraCost += Sol->getCost();
-            FoundMatchingOp = true;
-            OperandSols[InstOp].push_back(Sol);
-            break;
-            // NOTE: if we find a way to represent a combination of sols we can solve
-            // the below problem. 
-            // TODO: If we don't break we might have 2 or more OperandSols for a 
-            // single sequence of unique Instruction solutions for users operands etc.
-            // We need to create another sequence for that. 
-          }
-        }
-        if (!FoundMatchingOp) {
-          DiscardSolution = true;
-        }
-      }
-      if (DiscardSolution) {
+      // TODO: if an Operand is an Instruction with uses, probably we need to
+      // check their solutions and the users and so on..?
+      DenseMap<Value *, WideningIntegerSolutionInfo *> CandidateSols;
+      bool MatchingForOps = updateOperands(Instr, InstSol, CandidateSols);
+      if (!MatchingForOps) {
         dbgs() << "Discarding Sol didn't found op width..\n";
         continue;
       }
-      InstSol->setCost(InstSol->getCost() + ExtraCost);
 
       dbgs() << "Checking Instr Width " << InstrUpdatedWidth << "\n";
 
-      DenseMap<Value *, WideningIntegerSolutionInfo *> CandidateUserSols;
       std::queue<Instruction *> userWorklist;
       bool AllMatching = true;
       bool MatchingForAllOps = true;
@@ -1051,7 +1031,6 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       }
       unsigned TotalCost = InstSol->getCost();
       DenseMap<Instruction*, SolutionSet> UserSols;
-      bool MatchingForAllOps;
       // current inst Sol width
       while (!userWorklist.empty()) {
         Instruction *User = userWorklist.front();
@@ -1063,27 +1042,21 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
           // TODO: maybe we can check if at least one solution was legal
           // check if the AllMatchingWidth is equivalent. 
           bool isLegal =
-              checkUserSol(User, UserSol, Instr, InstSol,
-                          ChangedWidth, CandidateUserSols);
+              checkUserSol(User, UserSol, Instr, InstSol, ChangedWidth);
           if(isLegal){
-            UserSols[User].push_back(UserSol);
-            TotalCost += UserSol->getCost();
-            break;
-            // NOTE: if we find a way to represent a combination of sols we can solve
-            // the below problem. 
-            // TODO: If we don't break we might have 2 or more UserSols for a 
-            // single sequence of unique Instruction solutions for users operands etc.
-            // We need to create another sequence for that. 
+            AllMatchingWidth = true;
+            CandidateSols[User] = UserSol;
           }
           if (ChangedWidth) {
-            // TODO: update operands with new Approach.
-            MatchingforAllOps = checkOperands(User, CandidateUserSols[User], CandidateUserSols);
+            MatchingForAllOps = updateOperands(User, UserSol, CandidateSols);
           }
         }
         if (!UserSols.size() == 0) {
-          dbgs() << "Didn't found suitable solution for --> \n";
+          dbgs() << "Exiting...!! Didn't found suitable solution for --> \n";
           User->dump();
           AllMatching = false;
+          break; 
+          // NOTE: we didn't find any solution for that user. 
         }
         if (ChangedWidth && MatchingForAllOps) {
           // TODO: need to see what to do with the operands. here or elsewhere
@@ -1102,9 +1075,9 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       }
       if (AllMatching && MatchingForAllOps) {
         dbgs() << "Found a Combination..!\n";
-        Combinations.push_back(CandidateUserSols);
+        Combinations.push_back(CandidateSols);
         CurrentInstSol[Instr].push_back(InstSol);
-        SolsPerInst[Instr].UserSols.push_back(std::pair(UserSols, TotalCost));
+        //SolsPerInst[Instr].UserSols.push_back(UserSols);
       } else if (AllMatching == 0 || MatchingForAllOps == 0) {
         dbgs() << "AllMatching for Users is " << AllMatching << "\n";
         dbgs() << "MatchingForAllOps for Operands is " << MatchingForAllOps
@@ -1112,7 +1085,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       }
     } // End Inst current Sol
     if (!MatchingWidthForAllUsers) {
-      dbgs() << "Didn't found Solutions for all users for Instruction -->\n";
+      dbgs() << "Didn't find Solutions for all users for Instruction -->\n";
       Instr->dump();
       dbgs() << "\nInst Solutions are --> \n";
       printInstrSols(Instr);
@@ -1142,9 +1115,6 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         printInstrSols(User);
       }
     }
-    dbgs() << "------------------------------------------------------\n";
-    usersEncountered.clear();
-
     for (auto i = 0U; i < Combinations.size(); i++) {
       auto ValuesSolsMap = Combinations[i];
       int Sum = 0;
@@ -1160,7 +1130,46 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
     BestUserSolsPerInst[Instr] = BestCombination;
     dbgs() << "For Instr " << *Instr << " best Sol is " << BestInstSol << "\n";
     BestSolPerInst[Instr] = BestInstSol;
-  } // end Inst worklist
+    dbgs() << "------------------------------------------------------\n";
+    usersEncountered.clear();
+  }
+}
+
+
+// FIXME: v2 is only to calculate the best solution globally 
+// after we had finished finding all the solutions, and it is way more complex.
+//
+// TODO: check if the current version of this function calculates the
+// best solutions that are possible.
+// TODO: modify the algorithm to check the operands of the Users and
+// Instruction.
+void WideningIntegerArithmetic::calcBestUserSols_v2(Function &F) {
+  
+
+  for (auto entry : SolsPerInst){
+    int cost = INT_MAX;
+    struct InstSolutions InstructionSols = entry.second;
+    Instruction *Inst = entry.first;
+    for(WideningIntegerSolutionInfo *InstSol : AvailableSolutions[Inst]){
+      int InstCost = InstSol->getCost();
+      // for every operand
+      for (auto opSolEntries :  InstructionSols.OperandSols){
+        // for every user 
+        for(auto userSolEntries : InstructionSols.UserSols){
+          auto OpSols = opSolEntries.second;
+          auto UserSols = userSolEntries.second;
+          for(auto OpSol : OpSols ){
+            for(auto UserSol : UserSols){
+              if(isLegalAndMatching(OpSol, UserSol) && 
+                  isLegalAndMatching(UserSol, InstSol) ){
+                int TotalCost = OpSol->getCost() + UserSol->getCost();
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 inline short int WideningIntegerArithmetic::getKnownFillTypeWidth(Value *V) {
@@ -1692,7 +1701,7 @@ inline Type *WideningIntegerArithmetic::getTypeFromInteger(int Integer) {
   return Ty;
 }
 
-inline int *WideningIntegerArithmetic::getIntegerFromType(Type *ty) {
+inline int WideningIntegerArithmetic::getIntegerFromType(Type *Ty) {
   if(auto *IntTy = dyn_cast<IntegerType>(Ty)){
     switch (IntTy->getBitWidth()) {
     case 8:  return 8;
