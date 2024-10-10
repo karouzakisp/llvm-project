@@ -183,7 +183,7 @@ private:
                        std::queue<Value *> &Worklist);
   
   struct InstSolutions {
-    SolutionSet InstSols; 
+    DenseMap<Instruction *, SolutionSet> InstSols; 
     DenseMap<Value*, SolutionSet> OperandSols;
     DenseMap<Instruction*, SolutionSet> UserSols;
   };
@@ -848,6 +848,7 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
+// TODO: add extension if it's needed to an operand, check how it is safe. 
 inline bool WideningIntegerArithmetic::updateOperands(
     Instruction *I, WideningIntegerSolutionInfo *InstSol, 
     DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols) {
@@ -921,7 +922,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
       MatchingForAllOps = false;
     } else {
       
-      //SolsPerInst[I].OperandSols.push_back(OperandSols);
+      SolsPerInst[I].OperandSols = OperandSols;
       dbgs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 " FOUND MATCHING SOL.\n";
     }
@@ -929,6 +930,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
   return MatchingForAllOps;
 }
 
+// TODO: add extension if it's needed to a user, check how it is safe. 
 inline bool WideningIntegerArithmetic::checkUserSol(
     Instruction *User, WideningIntegerSolutionInfo *UserSol, Instruction *Instr,
     WideningIntegerSolutionInfo *InstSol,
@@ -1077,7 +1079,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
         dbgs() << "Found a Combination..!\n";
         Combinations.push_back(CandidateSols);
         CurrentInstSol[Instr].push_back(InstSol);
-        //SolsPerInst[Instr].UserSols.push_back(UserSols);
+        SolsPerInst[Instr].UserSols = UserSols;
       } else if (AllMatching == 0 || MatchingForAllOps == 0) {
         dbgs() << "AllMatching for Users is " << AllMatching << "\n";
         dbgs() << "MatchingForAllOps for Operands is " << MatchingForAllOps
@@ -1138,35 +1140,65 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
 
 // FIXME: v2 is only to calculate the best solution globally 
 // after we had finished finding all the solutions, and it is way more complex.
-//
-// TODO: check if the current version of this function calculates the
-// best solutions that are possible.
-// TODO: modify the algorithm to check the operands of the Users and
-// Instruction.
 void WideningIntegerArithmetic::calcBestUserSols_v2(Function &F) {
   
+ // struct InstSolutions {
+ //   DenseMap<Instruction *, SolutionSet> InstSols; 
+ //   DenseMap<Value*, SolutionSet> OperandSols;
+ //   DenseMap<Instruction*, SolutionSet> UserSols;
+ // };
+  
 
+  DenseMap<Instruction*, 
+      DenseMap<WideningIntegerSolutionInfo*, SolutionSet>> InstLegalSols;
   for (auto entry : SolsPerInst){
     int cost = INT_MAX;
     struct InstSolutions InstructionSols = entry.second;
     Instruction *Inst = entry.first;
-    for(WideningIntegerSolutionInfo *InstSol : AvailableSolutions[Inst]){
+    
+    for(WideningIntegerSolutionInfo *InstSol : InstSolutions.InstSols[Inst]){
       int InstCost = InstSol->getCost();
       // for every operand
-      for (auto opSolEntries :  InstructionSols.OperandSols){
         // for every user 
-        for(auto userSolEntries : InstructionSols.UserSols){
-          auto OpSols = opSolEntries.second;
-          auto UserSols = userSolEntries.second;
-          for(auto OpSol : OpSols ){
-            for(auto UserSol : UserSols){
-              if(isLegalAndMatching(OpSol, UserSol) && 
-                  isLegalAndMatching(UserSol, InstSol) ){
-                int TotalCost = OpSol->getCost() + UserSol->getCost();
-              }
-            }
+      for(auto userSolEntries : InstructionSols.UserSols){
+        SolutionSet UserSols = userSolEntries.second;
+        for(auto UserSol : UserSols){
+          if(isLegalAndMatching(UserSol, InstSol)){
+            InstLegalSols[Inst][InstSol].push_back(UserSol);
           }
         }
+      } 
+      for (auto opSolEntries :  InstructionSols.OperandSols){
+        SolutionSet OpSols = opSolEntries.second;
+        for(auto OpSol : OpSols ){
+          if(isLegalAndMatching(OpSol, InstSol) ){
+            InstLegalSols[Inst][InstSol].push_back(OpSol); 
+          }
+        }   
+      } 
+    }
+  }
+  for(auto entry : InstLegalSols){
+    Instruction *I = entry.first;
+    int min_cost = INT_MAX;
+    WideningIntegerSolutionInfo *SelectedSol;
+    DenseMap<Value *, WideningIntegerSolutionInfo*> SelectedOpUserSols;
+    for(auto LegalSolsEntry : entry.second){
+      SolutionSet OpAndUserSols = LegalSolsEntry.second;
+      int total_cost = 0;
+      WideningIntegerSolutionInfo *InstSol = LegalSolsEntry.first;
+      for(auto Sol : OpAndUserSols){
+        total_cost += Sol->getCost();
+      }
+      total_cost += InstSol->getCost();
+      if(total_cost < min_cost){
+        SelectedSol = InstSol;
+        for(auto OpOrUserSol : OpAndUserSols){
+          Value *V = OpOrUserSol->getValue();
+          SelectedOpUserSols[V] = OpOrUserSol;
+        }
+        // TODO: do we need to keep all the users and ops sols?
+        // They might need an extension but check if is already done.
       }
     }
   }
