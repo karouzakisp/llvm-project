@@ -23,6 +23,7 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -32,7 +33,6 @@
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
-#include "llvm/IR/InstIterator.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
@@ -121,7 +121,6 @@ private:
 
   TargetWidthsMap TargetWidths;
 
-
   DenseMap<unsigned, UnaryFillTypeSet> UnaryFillTypesMap;
   DenseMap<unsigned, FillTypeSet> FillTypesMap;
   SmallPtrSet<Instruction *, 8> InstsToRemove;
@@ -181,15 +180,15 @@ private:
   bool solveSimplePhis(Instruction *Instr,
                        SmallVector<Value *, 32> IncomingValues,
                        std::queue<Value *> &Worklist);
-  
+
   struct InstSolutions {
-    DenseMap<Instruction *, SolutionSet> InstSols; 
-    DenseMap<Value*, SolutionSet> OperandSols;
-    DenseMap<Instruction*, SolutionSet> UserSols;
+    DenseMap<Instruction *, SolutionSet> InstSols;
+    DenseMap<Value *, SolutionSet> OperandSols;
+    DenseMap<Instruction *, SolutionSet> UserSols;
   };
   // Returns true if it finds matching Solutions for every User and Operand
-  // for every Instruction in F. 
-  bool generateOpsAndUserSols(Function &F); 
+  // for every Instruction in F.
+  bool generateOpsAndUserSols(Function &F);
   // Every Instruction may have multipe global Solutions.
   // Each global Solution has the totalCost, the solution for every value
   // that is related to the instruction, operands and users
@@ -207,14 +206,15 @@ private:
 
   void calcBestUserSols_v2(Function &F);
 
-  inline bool checkUserSol(
-      Instruction *User, WideningIntegerSolutionInfo *UserSol,
-      Instruction *Instr, WideningIntegerSolutionInfo *InstSol,
-      bool &ChangedWidth);
+  inline bool checkUserSol(Instruction *User,
+                           WideningIntegerSolutionInfo *UserSol,
+                           Instruction *Instr,
+                           WideningIntegerSolutionInfo *InstSol,
+                           bool &ChangedWidth);
 
   inline bool updateOperands(
-      Instruction *User, WideningIntegerSolutionInfo *UserSol, 
-      DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols); 
+      Instruction *User, WideningIntegerSolutionInfo *UserSol,
+      DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols);
 
   void replaceAllUsersOfWith(Value *From, Value *To);
 
@@ -848,9 +848,9 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
-// TODO: add extension if it's needed to an operand, check how it is safe. 
+// TODO: add extension if it's needed to an operand, check how it is safe.
 inline bool WideningIntegerArithmetic::updateOperands(
-    Instruction *I, WideningIntegerSolutionInfo *InstSol, 
+    Instruction *I, WideningIntegerSolutionInfo *InstSol,
     DenseMap<Value *, WideningIntegerSolutionInfo *> &CandidateSols) {
 
   if (isa<SwitchInst>(I)) {
@@ -858,7 +858,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
   }
   dbgs() << "Entering updateOperands..\n";
   bool MatchingForAllOps = true;
-  DenseMap<Value*, SolutionSet> OperandSols;
+  DenseMap<Value *, SolutionSet> OperandSols;
   unsigned totalCost = 0;
   for (unsigned i = 0U, e = I->getNumOperands(); i < e; ++i) {
     Value *Op = I->getOperand(i);
@@ -868,42 +868,40 @@ inline bool WideningIntegerArithmetic::updateOperands(
       continue;
     }
     // TODO: what to do with operands that are not Int?
-    // We do not have any solutions for them. 
-    if(!OpTy->isIntOrIntVectorTy()){
+    // We do not have any solutions for them.
+    if (!OpTy->isIntOrIntVectorTy()) {
       continue;
     }
     auto OpSols = AvailableSolutions[Op];
     bool FoundMatchingSol = false;
     auto InstrUpdatedWidth = InstSol->getUpdatedWidth();
     for (auto *OpSol : AvailableSolutions[Op]) {
-      if(OpSol->getUpdatedWidth() == InstrUpdatedWidth){
+      if (OpSol->getUpdatedWidth() == InstrUpdatedWidth) {
         FoundMatchingSol = true;
-      }else{
-        if(auto OpI = dyn_cast<Instruction>(Op) ){
-          if((isLegalToPromote(OpI) && 
-              getIntegerFromType(OpI->getType()) < InstrUpdatedWidth) 
-              ) {
+      } else {
+        if (auto OpI = dyn_cast<Instruction>(Op)) {
+          if ((isLegalToPromote(OpI) &&
+               getIntegerFromType(OpI->getType()) < InstrUpdatedWidth)) {
             auto NewOpSol = OpSol;
             NewOpSol->setUpdatedWidth(InstrUpdatedWidth);
             FoundMatchingSol = true;
           }
-        }
-        else if(isa<ConstantInt>(Op)){
+        } else if (isa<ConstantInt>(Op)) {
           // TODO: what if the UpdatedWidth of Instr is lower than before?
-          // maybe the constant doesn't fit in that specific bitWidth? 
+          // maybe the constant doesn't fit in that specific bitWidth?
           auto NewOpSol = OpSol;
           NewOpSol->setUpdatedWidth(InstrUpdatedWidth);
           FoundMatchingSol = true;
         }
-      } 
+      }
       // TODO: Is there a case where we can insert an extension
       // and increase the cost? Maybe isLegalToPromote covers all of them.
       //
-      //Type *OpType = Op->getType();
-      //auto UpdatedWidth = InstSol->getUpdatedWidth();
+      // Type *OpType = Op->getType();
+      // auto UpdatedWidth = InstSol->getUpdatedWidth();
       // we increment the cost because we need to insert a ext or
       // trunc here.
-      if(FoundMatchingSol){
+      if (FoundMatchingSol) {
         CandidateSols[Op] = OpSol;
         OperandSols[Op].push_back(OpSol);
         totalCost += OpSol->getCost();
@@ -922,7 +920,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
 
       MatchingForAllOps = false;
     } else {
-      
+
       SolsPerInst[I].OperandSols = OperandSols;
       dbgs() << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
                 " FOUND MATCHING SOL.\n";
@@ -932,11 +930,10 @@ inline bool WideningIntegerArithmetic::updateOperands(
   return MatchingForAllOps;
 }
 
-// TODO: add extension if it's needed to a user, check how it is safe. 
+// TODO: add extension if it's needed to a user, check how it is safe.
 inline bool WideningIntegerArithmetic::checkUserSol(
     Instruction *User, WideningIntegerSolutionInfo *UserSol, Instruction *Instr,
-    WideningIntegerSolutionInfo *InstSol,
-    bool &ChangedWidth) {
+    WideningIntegerSolutionInfo *InstSol, bool &ChangedWidth) {
   unsigned short UserUpdatedWidth = UserSol->getUpdatedWidth();
   // 2, possible 3 cases
   // 1) same Widths cost of Combination is zero
@@ -979,7 +976,7 @@ inline bool WideningIntegerArithmetic::checkUserSol(
   return FoundMatch;
 }
 
-void WideningIntegerArithmetic::calcBestUserSols(Function &F){ 
+void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
   std::queue<Instruction *> workList;
   // int TotalCost = INT_MAX;
   for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
@@ -1009,7 +1006,7 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
       // TODO: Instruction is dead erase it ??
     }
     auto *VInstr = dyn_cast<Value>(Instr);
-    // NOTE: MatchingWidthForAllUsers only for debugging 
+    // NOTE: MatchingWidthForAllUsers only for debugging
     bool MatchingWidthForAllUsers = false;
     dbgs() << "Checking Instr Solutions for Inst --> ";
     Instr->dump();
@@ -1035,15 +1032,14 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
       for (auto *User : Instr->users()) {
         if (auto *UserI = dyn_cast<Instruction>(User))
           userWorklist.insert(UserI);
-          
       }
-      DenseMap<Instruction*, SolutionSet> UserSols;
-      SetVector<Instruction*> UsersVisited;
+      DenseMap<Instruction *, SolutionSet> UserSols;
+      SetVector<Instruction *> UsersVisited;
       // current inst Sol width
       while (!userWorklist.empty()) {
         dbgs() << "userWorklist size is --> " << userWorklist.size() << "\n";
         Instruction *User = userWorklist.pop_back_val();
-        if(UsersVisited.count(User)){
+        if (UsersVisited.count(User)) {
           continue;
         }
         usersEncountered.push_back(User);
@@ -1051,10 +1047,10 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
         bool MatchingWidth = false;
         for (WideningIntegerSolutionInfo *UserSol : AvailableSolutions[User]) {
           // TODO: maybe we can check if at least one solution was legal
-          // check if the AllMatchingWidth is equivalent. 
+          // check if the AllMatchingWidth is equivalent.
           bool isLegal =
               checkUserSol(User, UserSol, Instr, InstSol, ChangedWidth);
-          if(isLegal){
+          if (isLegal) {
             MatchingWidth = true;
             CandidateSols[User] = UserSol;
           }
@@ -1063,18 +1059,34 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
           }
         }
         if (MatchingWidth == false) {
-          dbgs() << "Exiting...!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Didn't found suitable solution for --> \n";
+          dbgs() << "Exiting...!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Didn't found "
+                    "suitable solution for --> \n";
           User->dump();
+          dbgs() << "User Sols are --> \n";
+          printInstrSols(User);
+          if (AvailableSolutions[User].size() == 0) {
+            dbgs()
+                << "This user has no Solutions..........................!!!\n";
+          }
           AllMatching = false;
-          break; 
-          // NOTE: we didn't find any solution for that user. 
+          break;
+          // NOTE: we didn't find any solution for that user.
         }
         if (ChangedWidth && MatchingForAllOps) {
           // TODO: need to see what to do with the operands. here or elsewhere
           for (auto *UserInstr : User->users()) {
             if (auto *UserofUserInstr = dyn_cast<Instruction>(UserInstr)) {
-              if(!UsersVisited.count(UserofUserInstr))
-              userWorklist.insert(UserofUserInstr);
+              if (!UsersVisited.count(UserofUserInstr)) {
+                dbgs() << "Checking User " << *UserofUserInstr << "of Inst "
+                       << *Instr << "\n";
+                if ((isa<IntegerType>((*UserofUserInstr).getType()) ||
+                     isa<SwitchInst>(*UserofUserInstr))) {
+                  userWorklist.insert(UserofUserInstr);
+                } else {
+                  dbgs() << "IMPORTANT ignoring user of user ----> "
+                         << *UserofUserInstr << "\n";
+                }
+              }
             }
           }
         }
@@ -1151,63 +1163,63 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F){
   }
 }
 
-
-// FIXME: v2 is only to calculate the best solution globally 
+// FIXME: v2 is only to calculate the best solution globally
 // after we had finished finding all the solutions, and it is way more complex.
 void WideningIntegerArithmetic::calcBestUserSols_v2(Function &F) {
-  
- // struct InstSolutions {
- //   DenseMap<Instruction *, SolutionSet> InstSols; 
- //   DenseMap<Value*, SolutionSet> OperandSols;
- //   DenseMap<Instruction*, SolutionSet> UserSols;
- // };
-  
 
-  DenseMap<Instruction*, 
-      DenseMap<WideningIntegerSolutionInfo*, SolutionSet>> InstLegalSols;
-  for (auto entry : SolsPerInst){
+  // struct InstSolutions {
+  //   DenseMap<Instruction *, SolutionSet> InstSols;
+  //   DenseMap<Value*, SolutionSet> OperandSols;
+  //   DenseMap<Instruction*, SolutionSet> UserSols;
+  // };
+
+  DenseMap<Instruction *, DenseMap<WideningIntegerSolutionInfo *, SolutionSet>>
+      InstLegalSols;
+  for (auto entry : SolsPerInst) {
     int cost = INT_MAX;
     struct InstSolutions InstructionSols = entry.second;
     Instruction *Inst = entry.first;
-    
-    for(WideningIntegerSolutionInfo *InstSol : InstructionSols.InstSols[Inst]){
+
+    for (WideningIntegerSolutionInfo *InstSol :
+         InstructionSols.InstSols[Inst]) {
       // for every operand
-        // for every user 
-      for(auto userSolEntries : InstructionSols.UserSols){
+      // for every user
+      for (auto userSolEntries : InstructionSols.UserSols) {
         SolutionSet UserSols = userSolEntries.second;
-        for(auto UserSol : UserSols){
-          if(isLegalAndMatching(UserSol, InstSol)){
+        for (auto UserSol : UserSols) {
+          if (isLegalAndMatching(UserSol, InstSol)) {
             InstLegalSols[Inst][InstSol].push_back(UserSol);
           }
         }
-      } 
-      for (auto opSolEntries :  InstructionSols.OperandSols){
+      }
+      for (auto opSolEntries : InstructionSols.OperandSols) {
         SolutionSet OpSols = opSolEntries.second;
-        for(auto OpSol : OpSols ){
-          if(isLegalAndMatching(OpSol, InstSol) ){
-            InstLegalSols[Inst][InstSol].push_back(OpSol); 
+        for (auto OpSol : OpSols) {
+          if (isLegalAndMatching(OpSol, InstSol)) {
+            InstLegalSols[Inst][InstSol].push_back(OpSol);
           }
-        }   
-      } 
+        }
+      }
     }
   }
-  // TODO: apply DP recurrence DP[I][w] = ? + min(Sum(DP[User_i, w] for every User of I ))
-  for(auto entry : InstLegalSols){
+  // TODO: apply DP recurrence DP[I][w] = ? + min(Sum(DP[User_i, w] for every
+  // User of I ))
+  for (auto entry : InstLegalSols) {
     Instruction *I = entry.first;
     int min_cost = INT_MAX;
     WideningIntegerSolutionInfo *SelectedSol;
-    DenseMap<Value *, WideningIntegerSolutionInfo*> SelectedOpUserSols;
-    for(auto LegalSolsEntry : entry.second){
+    DenseMap<Value *, WideningIntegerSolutionInfo *> SelectedOpUserSols;
+    for (auto LegalSolsEntry : entry.second) {
       SolutionSet OpAndUserSols = LegalSolsEntry.second;
       int total_cost = 0;
       WideningIntegerSolutionInfo *InstSol = LegalSolsEntry.first;
-      for(auto Sol : OpAndUserSols){
+      for (auto Sol : OpAndUserSols) {
         total_cost += Sol->getCost();
       }
       total_cost += InstSol->getCost();
-      if(total_cost < min_cost){
+      if (total_cost < min_cost) {
         SelectedSol = InstSol;
-        for(auto OpOrUserSol : OpAndUserSols){
+        for (auto OpOrUserSol : OpAndUserSols) {
           Value *V = OpOrUserSol->getValue();
           SelectedOpUserSols[V] = OpOrUserSol;
         }
@@ -1748,15 +1760,20 @@ inline Type *WideningIntegerArithmetic::getTypeFromInteger(int Integer) {
 }
 
 inline int WideningIntegerArithmetic::getIntegerFromType(Type *Ty) {
-  if(auto *IntTy = dyn_cast<IntegerType>(Ty)){
+  if (auto *IntTy = dyn_cast<IntegerType>(Ty)) {
     switch (IntTy->getBitWidth()) {
-    case 8:  return 8;
-    case 16: return 16;
-    case 32: return 32;
-    case 64: return 64;
-    default: return 0;
+    case 8:
+      return 8;
+    case 16:
+      return 16;
+    case 32:
+      return 32;
+    case 64:
+      return 64;
+    default:
+      return 0;
     }
-  }else{
+  } else {
     assert(0 && "Called getIntegerFromType that is not IntTy");
   }
 }
@@ -2129,7 +2146,7 @@ bool WideningIntegerArithmetic::applySingleSol(
     break;
   case WIAK_WIDEN:
   case WIAK_WIDEN_GARBAGE: {
-    if(auto *Instr = dyn_cast<Instruction>(V)){
+    if (auto *Instr = dyn_cast<Instruction>(V)) {
       Instruction *InsertPt = Instr;
       if (auto *Arg = dyn_cast<Argument>(V)) {
         BasicBlock &BB = Arg->getParent()->front();
@@ -2137,7 +2154,7 @@ bool WideningIntegerArithmetic::applySingleSol(
       }
       InsertExt(V, InsertPt, NewTy);
       Promoted.insert(Instr);
-    }else{
+    } else {
       dbgs() << "Called WIAK_WIDEN on something that is not an Instruction\n";
     }
     break;
@@ -2146,10 +2163,10 @@ bool WideningIntegerArithmetic::applySingleSol(
     // TODO: needs fixes not complete, switch is diff stores are diff
     // and maybe more.
     Instruction *Instr;
-    if(isa<Instruction>(V))
+    if (isa<Instruction>(V))
       Instr = dyn_cast<Instruction>(V);
-    else{
-      dbgs () << "Called WIAK_NARROW on something that is not an Instruction\n";
+    else {
+      dbgs() << "Called WIAK_NARROW on something that is not an Instruction\n";
     }
     Value *Trunc = InsertTrunc(Instr, NewTy);
     // FIXME: handle truncate not done.
@@ -2196,21 +2213,21 @@ bool WideningIntegerArithmetic::applySingleSol(
     break;
   }
   case WIAK_EXTLO: {
-    if(auto *Instr = dyn_cast<Instruction>(V)){
+    if (auto *Instr = dyn_cast<Instruction>(V)) {
       Type *TruncTy = getTypeFromInteger(Sol->getWidth());
       Type *ExtTy = getTypeFromInteger(Sol->getUpdatedWidth());
       InsertSExtInReg(V, Instr, TruncTy, ExtTy);
-    }else{
+    } else {
       dbgs() << "Called WIAK_EXTLO on something that is not an Instruction";
     }
     break;
   }
   case WIAK_FILL: {
-    if(auto *Instr = dyn_cast<Instruction>(V)){
+    if (auto *Instr = dyn_cast<Instruction>(V)) {
       Type *TruncTy = getTypeFromInteger(Sol->getFillTypeWidth());
       Type *ExtTy = getTypeFromInteger(Sol->getUpdatedWidth());
       InsertSExtInReg(Instr, Instr, TruncTy, ExtTy);
-    }else{
+    } else {
       dbgs() << "Called WIAK_EXTLO on something that is not an Instruction";
     }
     break;
@@ -2225,9 +2242,9 @@ bool WideningIntegerArithmetic::applySingleSol(
           // that is user to the Inst we need to update?
           unsigned short NewUserWidth = BestSolPerInst[UseI]->getUpdatedWidth();
           unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
-          if ( (!isLegalToPromote(UseI) ||  
-              UseFillTypeWidth > Sol->getUpdatedWidth()) && 
-              NewUserWidth != Sol->getUpdatedWidth() ) {
+          if ((!isLegalToPromote(UseI) ||
+               UseFillTypeWidth > Sol->getUpdatedWidth()) &&
+              NewUserWidth != Sol->getUpdatedWidth()) {
             // TODO: Maybe count users that we cannot promote or drop
             // the extension and use that information? If we can drop
             // the extension to most users maybe we can create another
@@ -2238,7 +2255,7 @@ bool WideningIntegerArithmetic::applySingleSol(
       }
       return true;
     };
-    Instruction *Instr = dyn_cast<Instruction>(V); 
+    Instruction *Instr = dyn_cast<Instruction>(V);
     Value *N0 = Instr->getOperand(0);
     WideningIntegerSolutionInfo *BestSol = nullptr;
     if (auto *OP0 = dyn_cast<Instruction>(Instr->getOperand(0))) {
