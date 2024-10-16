@@ -151,7 +151,7 @@ protected:
 private:
   WIAKind Kind;
   // TODO: can a Value have more than 4 Operands?
-  SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands;
+  SmallPtrSet<const WideningIntegerSolutionInfo *, 4> Operands;
 
 public:
   WideningIntegerSolutionInfo() {}
@@ -170,15 +170,17 @@ public:
       : Opcode(other.getOpcode()), NewOpcode(other.getNewOpcode()),
         FillType(other.getFillType()), FillTypeWidth(other.getFillTypeWidth()),
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
-        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()),
-        Operands(other.getOperands()) {}
+        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {
+    for (auto *Op : other.getOperands()) {
+      Operands.insert(new WideningIntegerSolutionInfo(*Op));
+    }
+  }
 
   WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &&other)
       : Opcode(other.getOpcode()), NewOpcode(other.getNewOpcode()),
         FillType(other.getFillType()), FillTypeWidth(other.getFillTypeWidth()),
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
-        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()),
-        Operands(other.getOperands()) {}
+        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {}
 
   unsigned getOpcode(void) const { return Opcode; }
   void setOpcode(unsigned Opcode_) { Opcode = Opcode_; }
@@ -215,14 +217,15 @@ public:
   void setKind(WIAKind Kind_) { Kind = Kind_; }
   WIAKind getKind() const { return Kind; }
 
-  void setOperands(SmallPtrSet<WideningIntegerSolutionInfo *, 4> Operands_) {
+  void
+  setOperands(SmallPtrSet<const WideningIntegerSolutionInfo *, 4> Operands_) {
     Operands = Operands_;
     NumOperands = Operands_.size();
   }
-  SmallPtrSet<WideningIntegerSolutionInfo *, 4> getOperands(void) const {
+  SmallPtrSet<const WideningIntegerSolutionInfo *, 4> getOperands(void) const {
     return std::move(Operands);
   }
-  void addOperand(WideningIntegerSolutionInfo *Sol) {
+  void addOperand(const WideningIntegerSolutionInfo *Sol) {
     Operands.insert(Sol);
     NumOperands++;
   }
@@ -240,7 +243,7 @@ public:
   // Returns 0 if no one is redudant
   // Returns -1 if b is redundant given solution this
   // Returns 1 if "this" is redudant given solution b
-  inline int IsRedudant(const WideningIntegerSolutionInfo &b) {
+  inline int IsRedudant(WideningIntegerSolutionInfo &b) const {
 
     int n1 = FillTypeWidth;
     int c1 = Cost;
@@ -250,7 +253,7 @@ public:
     int w2 = b.getUpdatedWidth();
     int FillType1 = FillType;
     int FillType2 = b.getFillType();
-    if ((*this) == b) {
+    if (b == (*this)) {
       return -1;
     }
     if (w1 != w2 || FillType1 != FillType2 ||
@@ -282,12 +285,12 @@ inline raw_ostream &operator<<(raw_ostream &out,
   out << "\tOldWidth: " << Sol.getWidth() << '\n';
   out << "\tUpdatedWidth: " << Sol.getUpdatedWidth() << '\n';
   out << "\tCost : " << Sol.getCost() << '\n';
-  int i = 0;
-  for (auto Op : Sol.getOperands()) {
-    out << " Children " << i << "--> " << '\n';
-    out << *Op << "   ";
-    i++;
-  }
+  // int i = 0;
+  // for (auto Op : Sol.getOperands()) {
+  //   out << " Children " << i << "--> " << '\n';
+  //   out << *Op << "   ";
+  //   i++;
+  // }
 
   return out;
 }
@@ -687,6 +690,28 @@ public:
   static inline bool classof(WideningIntegerSolutionInfo const *Base) {
     switch (Base->getKind()) {
     case WIAK_NOOP:
+      return true;
+    default:
+      return false;
+    }
+  }
+};
+
+class WIA_UNKNOWN : public WideningIntegerSolutionInfo {
+public:
+  WIA_UNKNOWN() {}
+  ~WIA_UNKNOWN() {}
+  WIA_UNKNOWN(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
+              unsigned short FillTypeWidth_, unsigned short Width_,
+              unsigned short UpdatedWidth_, short int Cost_, Value *V_)
+      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
+            UpdatedWidth_, Cost_, WIAK_UNKNOWN, V_) {}
+
+  static inline bool classof(WIA_UNKNOWN const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
+    switch (Base->getKind()) {
+    case WIAK_UNKNOWN:
       return true;
     default:
       return false;
