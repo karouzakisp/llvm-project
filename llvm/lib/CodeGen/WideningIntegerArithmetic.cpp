@@ -1692,13 +1692,14 @@ bool WideningIntegerArithmetic::combineBINOPSols(
       // "\n";
       unsigned int UpdatedWidth = w1;
       if (isa<ICmpInst>(Binop)) {
-        UpdatedWidth = 1;
+        // TODO: check if we must anything else for ICMP.
       }
       EVT NewVT = EVT::getIntegerVT(*Ctx, UpdatedWidth);
       // TODO: with ICMP inst this always fails because the NewVT should be
       // always 1. In our case we need to change the type of the ICMP not the
       // result type.
-      if (!TLI->isOperationLegal(TLI->InstructionOpcodeToISD(Opcode), NewVT)) {
+      if (!TLI->isOperationLegal(TLI->InstructionOpcodeToISD(Opcode), NewVT) &&
+          !isa<ICmpInst>(Binop)) {
         dbgs() << "Operation is not legal.." << "with updatedWidth is "
                << UpdatedWidth << "\n";
         continue;
@@ -1767,6 +1768,7 @@ bool WideningIntegerArithmetic::visitSWITCH(Instruction *Instr,
           new WIA_CONSTANT(CONSTANT_INT_OPC, CONSTANT_INT_OPC, ExtensionChoice,
                            getKnownFillTypeWidth(CI), CI->getBitWidth(),
                            CondSol->getUpdatedWidth(), 0, CI);
+      dbgs() << "Created Constant Sol for switch --> " << *Sol << "\n";
       AvailableSolutions[CI].push_back(Sol);
     }
   }
@@ -1847,9 +1849,9 @@ WideningIntegerArithmetic::visitFILL(Instruction *Instr,
   }
   std::list<WideningIntegerSolutionInfo *> Solutions;
   for (const WideningIntegerSolutionInfo *Sol : Sols) {
-    if (Sol->getOpcode() == Instruction::SExt ||
-        llvm::ISD::isExtOpcode(Sol->getOpcode()) ||
-        Sol->getOpcode() == Instruction::Trunc)
+    unsigned SolOpc = Sol->getOpcode();
+    if (SolOpc == Instruction::SExt || llvm::ISD::isExtOpcode(SolOpc) ||
+        SolOpc == Instruction::Trunc)
       continue; // FILL is a ISD::SIGN_EXTEND_INREG
     // WIA_FILL extends the least significant *Width* bits of Instr
     // to targetWidth
@@ -1859,13 +1861,13 @@ WideningIntegerArithmetic::visitFILL(Instruction *Instr,
       // meaning is TLi.isOperationLegal enough for the NewVT?
       // FIXME: check correctness.
       if (IntegerSize < FillTypeWidth || IntegerSize < (int)Sol->getWidth() ||
-          TLI->InstructionOpcodeToISD(Sol->getOpcode()) == ISD::TRUNCATE ||
+          TLI->InstructionOpcodeToISD(SolOpc) == ISD::TRUNCATE ||
           !TLI->isOperationLegal(ISD::SIGN_EXTEND_INREG, NewVT)) {
         continue;
       }
-      WideningIntegerSolutionInfo *Fill = new WIA_FILL(
-          FILL_INST_OPC, FILL_INST_OPC, ExtensionChoice, FillTypeWidth,
-          FillTypeWidth, IntegerSize, Sol->getCost() + 1, VInstr);
+      WideningIntegerSolutionInfo *Fill =
+          new WIA_FILL(SolOpc, FILL_INST_OPC, ExtensionChoice, FillTypeWidth,
+                       FillTypeWidth, IntegerSize, Sol->getCost() + 1, VInstr);
       Fill->addOperand(Sol);
       Solutions.push_front(Fill);
     }
@@ -1967,10 +1969,9 @@ WideningIntegerArithmetic::visitWIDEN(Instruction *Instr,
       unsigned cost = getExtCost(Instr, Sol, IntegerSize);
       // Results to a widened expr based on ExtensionOpc
       WideningIntegerSolutionInfo *Widen =
-          new WIA_WIDEN(ExtensionOpc, ExtensionOpc, ExtensionChoice,
-                        FillTypeWidth, Width, IntegerSize, cost, VInstr);
+          new WIA_WIDEN(SolOpc, ExtensionOpc, ExtensionChoice, FillTypeWidth,
+                        Width, IntegerSize, cost, VInstr);
       Widen->addOperand(Sol);
-      dbgs() << "For Inst --> " << *Instr << "Created Sol " << *Widen << "\n";
       Solutions.push_front(Widen);
     }
   }
@@ -1998,10 +1999,9 @@ WideningIntegerArithmetic::visitWIDEN_GARBAGE(Instruction *Instr,
     if (SolOpc == FILL_INST_OPC)
       continue;
     unsigned IsdOpc = TLI->InstructionOpcodeToISD(SolOpc);
-    if (llvm::ISD::isExtOpcode(IsdOpc) ||
-        // TODO how to check for this? Is it needed also ? Sol->getOpcode()
-        // == ISD::SIGN_EXTEND_INREG ) ||
-        IsdOpc == Instruction::Trunc)
+    if (llvm::ISD::isExtOpcode(Sol->getOpcode()) ||
+        IsdOpc == ISD::SIGN_EXTEND_INREG || IsdOpc == ISD::TRUNCATE ||
+        Sol->getKind() == WIAK_WIDEN)
       continue;
     for (int IntegerSize : IntegerSizes) {
       EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
@@ -2012,7 +2012,7 @@ WideningIntegerArithmetic::visitWIDEN_GARBAGE(Instruction *Instr,
       unsigned cost = getExtCost(Instr, Sol, IntegerSize);
 
       WideningIntegerSolutionInfo *GarbageWiden =
-          new WIA_WIDEN(ExtensionOpc, ExtensionOpc, ANYTHING, FillTypeWidth,
+          new WIA_WIDEN(SolOpc, ExtensionOpc, ANYTHING, FillTypeWidth,
                         Sol->getWidth(), IntegerSize, cost, VInstr);
       GarbageWiden->addOperand(Sol);
       Solutions.push_front(GarbageWiden);
@@ -2043,9 +2043,9 @@ WideningIntegerArithmetic::visitNARROW(Instruction *Instr,
     unsigned SolOpc = Sol->getOpcode();
     if (SolOpc == FILL_INST_OPC)
       continue;
-    unsigned IsdOpc = TLI->InstructionOpcodeToISD(Sol->getOpcode());
-    if (llvm::ISD::isExtOpcode(Sol->getOpcode()) ||
-        IsdOpc == ISD::SIGN_EXTEND_INREG || IsdOpc == ISD::TRUNCATE)
+    unsigned IsdOpc = TLI->InstructionOpcodeToISD(SolOpc);
+    if (llvm::ISD::isExtOpcode(SolOpc) || IsdOpc == ISD::SIGN_EXTEND_INREG ||
+        IsdOpc == ISD::TRUNCATE)
       continue;
     for (int IntegerSize : TruncSizes) {
       EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
@@ -2060,7 +2060,7 @@ WideningIntegerArithmetic::visitNARROW(Instruction *Instr,
       if (!TLI->isTruncateFree(Ty1, Ty2))
         Cost = Cost + 1;
       WideningIntegerSolutionInfo *Trunc = new WIA_NARROW(
-          ExtensionOpc, ExtensionOpc,
+          SolOpc, ExtensionOpc,
           ExtensionChoice, // Will depend on available Narrowing ,
           FillTypeWidth, Width, IntegerSize, Sol->getCost() + 1, VInstr);
       Trunc->addOperand(Sol);
@@ -2146,10 +2146,13 @@ bool WideningIntegerArithmetic::visitDROP_EXT(Instruction *Instr,
       // TODO: check this. should be >= or > ??
       continue;
     }
+    dbgs() << "For123 instr --> " << *Instr << "\n";
     WideningIntegerSolutionInfo *Expr = new WIA_DROP_EXT(
         Instr->getOpcode(), Solution->getNewOpcode(), ExtensionChoice,
         FillTypeWidth, ExtendedWidth /*OldWidth*/, OldWidth /*NewWidth*/,
         Solution->getCost(), Instr);
+    dbgs() << "Created Sol --> " << *Expr << "\n";
+    dbgs() << "And Op Sol is " << *Solution << "\n";
     // we must retain the widen sol so we add a no op.
     // TODO check OldWidth must come from The operand of the Extension
     // or from The Solutions? PRobably thes solutions.
@@ -2262,12 +2265,17 @@ bool WideningIntegerArithmetic::applySingleSol(
     if (auto *I = dyn_cast<Instruction>(V))
       Builder.SetCurrentDebugLocation(I->getDebugLoc());
     Value *Truncated = InsertTrunc(V, B);
+    dbgs() << "Inserted Trunc.\n";
     Value *SExt = Builder.CreateSExt(Truncated, ExtTy);
+    dbgs() << "Inserted SExt.\n";
     if (auto *I = dyn_cast<Instruction>(SExt)) {
-      if (isa<Argument>(V))
+      if (isa<Argument>(V)) {
         I->moveBefore(InsertPt);
-      else
+      } else {
+        dbgs() << "Moving after..!\n";
         I->moveAfter(InsertPt);
+        dbgs() << "Moved after..!\n";
+      }
       // NewInsts.insert(I);
     }
 
@@ -2419,6 +2427,7 @@ bool WideningIntegerArithmetic::applyChain(
     Instruction *Instr, DenseMap<Value *, const WideningIntegerSolutionInfo *>
                             BestSolsUsersCombination) {
   bool Changed = false;
+  SmallSetVector<Instruction *, 16> Worklist;
 
   for (auto &Combination : BestSolsUsersCombination) {
     // All users are solved at this point
@@ -2440,9 +2449,13 @@ bool WideningIntegerArithmetic::applyChain(
   dbgs() << "Going to apply best Sols to users and operands";
   for (auto &Combination : BestSolsUsersCombination) {
     dbgs() << "Getting Sol!!\n";
-    Value *UserOrOp = dyn_cast<Instruction>(Combination.first);
+    Value *UserOrOp = Combination.first;
+    if (!UserOrOp) {
+      dbgs() << "Failed to find UserOrOp..\n";
+      assert(0);
+    }
     const WideningIntegerSolutionInfo *BestUserSol = Combination.second;
-    dbgs() << "Applying Single Sol for Inst " << *UserOrOp << "\n";
+    dbgs() << "Applying Single Sol for Value " << *UserOrOp << "\n";
     dbgs() << "With Solution " << *BestUserSol << "\n";
     applySingleSol(UserOrOp,
                    BestUserSol); // All users are solved at this point
