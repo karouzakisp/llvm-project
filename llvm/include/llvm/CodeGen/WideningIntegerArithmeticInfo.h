@@ -110,6 +110,7 @@ enum WIAKind {
   WIAK_LIT,
   WIAK_LOAD,
   WIAK_UNKNOWN,
+  WIAK_ICMP,
   WIAK_NOOP
 };
 
@@ -120,7 +121,7 @@ std::vector<std::string> WIAK_NAMES_VEC = {
     "WIAK_DROP_LOIGNORE", "WIAK_EXTLO",    "WIAK_SUBSUME_FILL",
     "WIAK_SUBSUME_INDEX", "WIAK_NATURAL",  "WIAK_STORE",
     "WIAK_CONSTANT",      "WIAK_LIT",      "WIAK_LOAD",
-    "WIAK_UNKNOWN",       "WIAK_NOOP"};
+    "WIAK_UNKNOWN",       "WIAK_ICMP",     "WIAK_NOOP"};
 
 // This class is used to specify all the arguments that a solution
 // of WideningIntegerArithmetic class requires.
@@ -150,7 +151,7 @@ protected:
 private:
   WIAKind Kind;
   // TODO: can a Value have more than 4 Operands?
-  SmallPtrSet<const WideningIntegerSolutionInfo *, 4> Operands;
+  SmallVector<const WideningIntegerSolutionInfo *, 4> Operands;
 
 public:
   WideningIntegerSolutionInfo() {}
@@ -171,7 +172,7 @@ public:
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
         Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {
     for (auto *Op : other.getOperands()) {
-      Operands.insert(new WideningIntegerSolutionInfo(*Op));
+      Operands.push_back(new WideningIntegerSolutionInfo(*Op));
     }
   }
 
@@ -179,7 +180,11 @@ public:
       : Opcode(other.getOpcode()), NewOpcode(other.getNewOpcode()),
         FillType(other.getFillType()), FillTypeWidth(other.getFillTypeWidth()),
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
-        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {}
+        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {
+    for (auto *Op : other.getOperands()) {
+      Operands.push_back(new WideningIntegerSolutionInfo(*Op));
+    }
+  }
 
   unsigned getOpcode(void) const { return Opcode; }
   void setOpcode(unsigned Opcode_) { Opcode = Opcode_; }
@@ -217,19 +222,23 @@ public:
   WIAKind getKind() const { return Kind; }
 
   void
-  setOperands(SmallPtrSet<const WideningIntegerSolutionInfo *, 4> Operands_) {
-    Operands = Operands_;
+  setOperands(SmallVector<const WideningIntegerSolutionInfo *, 4> Operands_) {
+    for (auto *Op : Operands_) {
+      Operands.push_back(Op);
+    }
     NumOperands = Operands_.size();
   }
-  SmallPtrSet<const WideningIntegerSolutionInfo *, 4> getOperands(void) const {
+  SmallVector<const WideningIntegerSolutionInfo *, 4> getOperands(void) const {
     return std::move(Operands);
   }
   void addOperand(const WideningIntegerSolutionInfo *Sol) {
-    Operands.insert(Sol);
+    Operands.push_back(Sol);
     NumOperands++;
   }
 
-  WideningIntegerSolutionInfo *getOperand(short int i) { return NULL; }
+  const WideningIntegerSolutionInfo *getOperand(short int i) const {
+    return Operands[i];
+  }
 
   unsigned short getFillTypeWidth(void) const { return FillTypeWidth; }
 
@@ -716,6 +725,41 @@ public:
       return false;
     }
   }
+};
+
+class WIA_ICMP : public WideningIntegerSolutionInfo {
+public:
+  WIA_ICMP() {}
+  ~WIA_ICMP() {}
+  WIA_ICMP(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
+           unsigned short FillTypeWidth_, unsigned short Width_,
+           unsigned short UpdatedWidth_, short int Cost_, Value *V_)
+      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
+            UpdatedWidth_, Cost_, WIAK_ICMP, V_) {}
+
+  static inline bool classof(WIA_ICMP const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
+    switch (Base->getKind()) {
+    case WIAK_ICMP:
+      return true;
+    default:
+      return false;
+    }
+  }
+  unsigned short getIcmpWidth(void) const { return IcmpWidth; }
+
+  void setIcmpWidth(unsigned short IcmpWidth_) { IcmpWidth = IcmpWidth_; }
+
+  unsigned short getUpdatedIcmpWidth(void) const { return IcmpWidth; }
+
+  void setUpdatedIcmpWidth(unsigned short UpdatedIcmpWidth_) {
+    UpdatedIcmpWidth = UpdatedIcmpWidth_;
+  }
+
+private:
+  unsigned short IcmpWidth;
+  unsigned short UpdatedIcmpWidth;
 };
 
 } // namespace llvm
