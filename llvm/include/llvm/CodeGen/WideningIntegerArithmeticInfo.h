@@ -5,6 +5,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/raw_ostream.h"
 #include <iostream>
+#include <memory>
 #include <queue>
 
 namespace llvm {
@@ -111,7 +112,8 @@ enum WIAKind {
   WIAK_LOAD,
   WIAK_UNKNOWN,
   WIAK_ICMP,
-  WIAK_NOOP
+  WIAK_NOOP,
+  WIAK_SWITCH
 };
 
 std::vector<std::string> WIAK_NAMES_VEC = {
@@ -121,7 +123,8 @@ std::vector<std::string> WIAK_NAMES_VEC = {
     "WIAK_DROP_LOIGNORE", "WIAK_EXTLO",    "WIAK_SUBSUME_FILL",
     "WIAK_SUBSUME_INDEX", "WIAK_NATURAL",  "WIAK_STORE",
     "WIAK_CONSTANT",      "WIAK_LIT",      "WIAK_LOAD",
-    "WIAK_UNKNOWN",       "WIAK_ICMP",     "WIAK_NOOP"};
+    "WIAK_UNKNOWN",       "WIAK_ICMP",     "WIAK_NOOP",
+    "WIAK_SWITCH"};
 
 // This class is used to specify all the arguments that a solution
 // of WideningIntegerArithmetic class requires.
@@ -151,10 +154,11 @@ protected:
 private:
   WIAKind Kind;
   // TODO: can a Value have more than 4 Operands?
-  SmallVector<const WideningIntegerSolutionInfo *, 4> Operands;
+  SmallVector<std::unique_ptr<WideningIntegerSolutionInfo>, 4> Operands;
 
 public:
   WideningIntegerSolutionInfo() {}
+  ~WideningIntegerSolutionInfo() = default;
   WideningIntegerSolutionInfo(WIAKind Kind_) : Kind(Kind_) {}
   WideningIntegerSolutionInfo(unsigned Opcode_, unsigned NewOpcode_,
                               IntegerFillType FillType_,
@@ -171,19 +175,58 @@ public:
         FillType(other.getFillType()), FillTypeWidth(other.getFillTypeWidth()),
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
         Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {
-    for (auto *Op : other.getOperands()) {
-      Operands.push_back(new WideningIntegerSolutionInfo(*Op));
+    for (const auto &Op : other.getOperands()) {
+      Operands.push_back(std::make_unique<WideningIntegerSolutionInfo>(*Op));
     }
   }
 
-  WideningIntegerSolutionInfo(const WideningIntegerSolutionInfo &&other)
+  WideningIntegerSolutionInfo(WideningIntegerSolutionInfo &&other)
       : Opcode(other.getOpcode()), NewOpcode(other.getNewOpcode()),
         FillType(other.getFillType()), FillTypeWidth(other.getFillTypeWidth()),
         Width(other.getWidth()), UpdatedWidth(other.getUpdatedWidth()),
-        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()) {
-    for (auto *Op : other.getOperands()) {
-      Operands.push_back(new WideningIntegerSolutionInfo(*Op));
+        Cost(other.getCost()), V(other.getValue()), Kind(other.getKind()),
+        Operands(std::move(other.Operands)) {
+    other.V = nullptr;
+  }
+
+  WideningIntegerSolutionInfo &
+  operator=(const WideningIntegerSolutionInfo &other) {
+    if (this != &other) {
+      Opcode = other.Opcode;
+      NewOpcode = other.NewOpcode;
+      FillType = other.FillType;
+      FillTypeWidth = other.FillTypeWidth;
+      Width = other.Width;
+      UpdatedWidth = other.UpdatedWidth;
+      Cost = other.Cost;
+      V = other.V;
+      Kind = other.Kind;
+
+      Operands.clear();
+      for (const auto &Op : other.Operands) {
+        Operands.push_back(std::make_unique<WideningIntegerSolutionInfo>(*Op));
+      }
     }
+    return *this;
+  }
+
+  WideningIntegerSolutionInfo &
+  operator=(WideningIntegerSolutionInfo &&other) noexcept {
+    if (this != &other) {
+      Opcode = other.Opcode;
+      NewOpcode = other.NewOpcode;
+      FillType = other.FillType;
+      FillTypeWidth = other.FillTypeWidth;
+      Width = other.Width;
+      UpdatedWidth = other.UpdatedWidth;
+      Cost = other.Cost;
+      V = other.V;
+      Kind = other.Kind;
+      Operands = std::move(other.Operands);
+
+      other.V = nullptr; // Ensure the moved-from object is safe.
+    }
+    return *this;
   }
 
   unsigned getOpcode(void) const { return Opcode; }
@@ -221,23 +264,36 @@ public:
   void setKind(WIAKind Kind_) { Kind = Kind_; }
   WIAKind getKind() const { return Kind; }
 
+  // NOTE:: this copies the operands is slower than transfering ownernship
+  // but safe.
+  // Consider the usage and choose between transfering ownernship or copying.
   void
-  setOperands(SmallVector<const WideningIntegerSolutionInfo *, 4> Operands_) {
-    for (auto *Op : Operands_) {
-      Operands.push_back(Op);
+  setOperands(const SmallVector<std::unique_ptr<WideningIntegerSolutionInfo>, 4>
+                  &Operands_) {
+    Operands.clear();
+    for (const auto &Operand : Operands_) {
+      Operands.push_back(
+          std::make_unique<WideningIntegerSolutionInfo>(*Operand));
     }
     NumOperands = Operands_.size();
   }
-  SmallVector<const WideningIntegerSolutionInfo *, 4> getOperands(void) const {
-    return std::move(Operands);
+
+  SmallVector<std::unique_ptr<WideningIntegerSolutionInfo>, 4>
+  getOperands(void) const {
+    SmallVector<std::unique_ptr<WideningIntegerSolutionInfo>, 4> OpsCopy;
+    for (const auto &Operand : Operands) {
+      OpsCopy.push_back(
+          std::make_unique<WideningIntegerSolutionInfo>(*Operand));
+    }
+    return OpsCopy;
   }
-  void addOperand(const WideningIntegerSolutionInfo *Sol) {
-    Operands.push_back(Sol);
+  void addOperand(std::unique_ptr<WideningIntegerSolutionInfo> Sol) {
+    Operands.push_back(std::move(Sol));
     NumOperands++;
   }
 
   const WideningIntegerSolutionInfo *getOperand(short int i) const {
-    return Operands[i];
+    return Operands[i].get();
   }
 
   unsigned short getFillTypeWidth(void) const { return FillTypeWidth; }
@@ -698,6 +754,28 @@ public:
   static inline bool classof(WideningIntegerSolutionInfo const *Base) {
     switch (Base->getKind()) {
     case WIAK_NOOP:
+      return true;
+    default:
+      return false;
+    }
+  }
+};
+
+class WIA_SWITCH : public WideningIntegerSolutionInfo {
+public:
+  WIA_SWITCH() {}
+  ~WIA_SWITCH() {}
+  WIA_SWITCH(unsigned Opcode_, unsigned NewOpcode_, IntegerFillType FillType_,
+             unsigned short FillTypeWidth_, unsigned short Width_,
+             unsigned short UpdatedWidth_, short int Cost_, Value *V_)
+      : WideningIntegerSolutionInfo::WideningIntegerSolutionInfo(
+            Opcode_, NewOpcode_, FillType_, FillTypeWidth_, Width_,
+            UpdatedWidth_, Cost_, WIAK_SWITCH, V_) {}
+
+  static inline bool classof(WIA_NOOP const *) { return true; }
+  static inline bool classof(WideningIntegerSolutionInfo const *Base) {
+    switch (Base->getKind()) {
+    case WIAK_SWITCH:
       return true;
     default:
       return false;
