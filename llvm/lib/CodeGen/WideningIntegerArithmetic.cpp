@@ -224,13 +224,21 @@ private:
                              const WideningIntegerSolutionInfo *UserSol,
                              DenseMap<Value *, SolutionSet> &CandidateSols);
 
+  // checks if V has a matching with InstSol.
+  // 1 --> matches
+  // 0 --> doesn't match
+  // -1 --> cannot match so continue.
+  int checkMatchingSol(Value *V, const WideningIntegerSolutionInfo *InstSol,
+                       DenseMap<Value *, SolutionSet> &CandidateSols);
+
   void replaceAllUsersOfWith(Value *From, Value *To);
 
   // Applies this *Sol* to the Value  *V*
   bool applySingleSol(Value *V, const WideningIntegerSolutionInfo *Sol);
   // iterates all the uses of an Instruction that is solved
   // and applies the updated Instruction to all the uses.
-  // Note that it might need to update the uses and ops of the Instruction also.
+  // Note that it might need to update the uses and ops of the Instruction
+  // also.
   bool applyChain(Instruction *Instr);
 
   bool applyPHI(Instruction *I, WideningIntegerSolutionInfo *Sol);
@@ -957,6 +965,73 @@ bool inline WideningIntegerArithmetic::isLegalAndMatching(
   return Sol1->getUpdatedWidth() == Sol2->getUpdatedWidth();
 }
 
+int WideningIntegerArithmetic::checkMatchingSol(
+    Value *V, const WideningIntegerSolutionInfo *InstSol,
+    DenseMap<Value *, SolutionSet> &CandidateSols) {
+  Type *VTy = V->getType();
+  // if (isa<SwitchInst>(I) && !isa<ConstantInt>(Op)) {
+  //   dbgs() << "CHECK if correct Ignoring Operand --> " << *Op << "\n";
+  //   continue;
+  // }
+  //  TODO: what to do with operands that are not Int?
+  //  We do not have any solutions for them.
+  if (!VTy->isIntOrIntVectorTy()) {
+    dbgs() << "Didn't find int-type for op " << *V << "\n";
+    return false;
+  }
+  // auto OpSols = AvailableSolutions[Op];
+  bool FoundMatchingSol = false;
+  auto InstrUpdatedWidth = InstSol->getUpdatedWidth();
+  dbgs() << "Inside updateOperands Checking Operand " << *V << "\n";
+  dbgs() << "Inside updateOperands inst updated width is --> "
+         << InstrUpdatedWidth << "\n";
+  for (auto *VSol : AvailableSolutions[V]) {
+    WIAKind SolKind = VSol->getKind();
+    dbgs() << "Inside update Operands Checking Sol " << *VSol << "\n";
+    dbgs() << "Inside update Operands Checking Sol " << VSol << "\n";
+    if (VSol->getUpdatedWidth() == InstrUpdatedWidth) {
+      FoundMatchingSol = true;
+    } else {
+      if (auto *VI = dyn_cast<Instruction>(V)) {
+        if ((isLegalToPromote(VI) &&
+             getIntegerFromType(VI->getType()) < InstrUpdatedWidth) &&
+            // TODO: only for binops for now.
+            SolKind == WIAK_BINOP) {
+          auto *NewOpSol = new WideningIntegerSolutionInfo(*VSol);
+          dbgs() << "Update Operands Inst that got updated width is --> "
+                 << *InstSol << "\n";
+          NewOpSol->setUpdatedWidth(InstrUpdatedWidth);
+          dbgs() << "v177 Created new OpSol --> " << *NewOpSol
+                 << "for Instruction --> " << *VI << "\n";
+          FoundMatchingSol = true;
+        }
+      } else if (isa<ConstantInt>(V)) {
+        // TODO: what if the UpdatedWidth of Instr is lower than before?
+        // maybe the constant doesn't fit in that specific bitWidth?
+        auto *NewVSol = new WideningIntegerSolutionInfo(*VSol);
+        NewVSol->setUpdatedWidth(InstrUpdatedWidth);
+        dbgs() << "v123 Created new OpSol --> " << *NewVSol << "\n";
+        FoundMatchingSol = true;
+      }
+    }
+    // TODO: Is there a case where we can insert an extension
+    // and increase the cost? Maybe isLegalToPromote covers all of them.
+    //
+    // Type *OpType = Op->getType();
+    // auto UpdatedWidth = InstSol->getUpdatedWidth();
+    // we increment the cost because we need to insert a ext or
+    // trunc here.
+    if (FoundMatchingSol) {
+      CandidateSols[V].push_back(VSol);
+      // OperandSols[Op].push_back(OpSol);
+    } else {
+      dbgs() << "Inside Update Operands Didn't find matching sol for " << *VSol
+             << "\n";
+    }
+  }
+  return FoundMatchingSol;
+}
+
 // TODO: add extension if it's needed to an operand, check how it is safe.
 inline bool WideningIntegerArithmetic::updateOperands(
     Instruction *I, const WideningIntegerSolutionInfo *InstSol,
@@ -968,30 +1043,31 @@ inline bool WideningIntegerArithmetic::updateOperands(
   dbgs() << "Entering updateOperands..\n";
   bool MatchingForAllOps = true;
   DenseMap<Value *, SolutionSet> OperandSols;
-  bool processed_cond = true;
-  for (unsigned i = 0U, e = I->getNumOperands(); i < e && processed_cond;) {
-    Value *Op;
-    if (auto *SI = dyn_cast<SwitchInst>(I)) {
-      Op = SI->getCondition();
-      dbgs() << "142Found Switch Cond " << *Op << "\n";
-      processed_cond = false;
-    } else {
-      Op = I->getOperand(i);
-      ++i;
-    }
-    if (auto *PHI = dyn_cast<PHINode>(I)) {
-      dbgs() << "WOWWW first operand for " << *I << "is -----> " << *Op << "\n";
-    }
+  SmallVector<Value *, 4> Values;
 
-    Type *OpTy = Op->getType();
+  for (unsigned i = 0U, e = I->getNumOperands(); i < e; ++i) {
+    Value *Op = I->getOperand(i);
+    Values.push_back(Op);
+  }
+  if (auto *SI = dyn_cast<SwitchInst>(I)) {
+    Values.push_back(SI->getCondition());
+    for (auto Case : SI->cases()) {
+      ConstantInt *CaseVal = Case.getCaseValue();
+      Values.push_back(CaseVal);
+    }
+  }
+  bool FoundMatchingSol = true;
+  for (Value *V : Values) {
+
+    Type *VTy = V->getType();
     // if (isa<SwitchInst>(I) && !isa<ConstantInt>(Op)) {
     //   dbgs() << "CHECK if correct Ignoring Operand --> " << *Op << "\n";
     //   continue;
     // }
     //  TODO: what to do with operands that are not Int?
     //  We do not have any solutions for them.
-    if (!OpTy->isIntOrIntVectorTy()) {
-      dbgs() << "Didn't find int-type for op " << *Op << "\n";
+    if (!VTy->isIntOrIntVectorTy()) {
+      dbgs() << "Didn't find int-type for op " << *V << "\n";
       continue;
     }
     // auto OpSols = AvailableSolutions[Op];
@@ -1007,17 +1083,17 @@ inline bool WideningIntegerArithmetic::updateOperands(
       dbgs() << "Found icmp and updated to icmp width " << InstrUpdatedWidth
              << "From width --> " << InstSol->getUpdatedWidth() << "\n";
     }
-    dbgs() << "Inside updateOperands Checking Operand " << *Op << "\n";
+    dbgs() << "Inside updateOperands Checking Operand " << *V << "\n";
     dbgs() << "Inside updateOperands inst updated width is --> "
            << InstrUpdatedWidth << "\n";
-    for (auto *OpSol : AvailableSolutions[Op]) {
+    for (auto *OpSol : AvailableSolutions[V]) {
       WIAKind SolKind = OpSol->getKind();
       dbgs() << "Inside update Operands Checking Sol " << *OpSol << "\n";
       dbgs() << "Inside update Operands Checking Sol " << OpSol << "\n";
       if (OpSol->getUpdatedWidth() == InstrUpdatedWidth) {
         FoundMatchingSol = true;
       } else {
-        if (auto *OpI = dyn_cast<Instruction>(Op)) {
+        if (auto *OpI = dyn_cast<Instruction>(V)) {
           if ((isLegalToPromote(OpI) &&
                getIntegerFromType(OpI->getType()) < InstrUpdatedWidth) &&
               // TODO: only for binops for now.
@@ -1030,7 +1106,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
                    << "for Instruction --> " << *OpI << "\n";
             FoundMatchingSol = true;
           }
-        } else if (isa<ConstantInt>(Op)) {
+        } else if (isa<ConstantInt>(V)) {
           // TODO: what if the UpdatedWidth of Instr is lower than before?
           // maybe the constant doesn't fit in that specific bitWidth?
           auto *NewOpSol = new WideningIntegerSolutionInfo(*OpSol);
@@ -1047,8 +1123,8 @@ inline bool WideningIntegerArithmetic::updateOperands(
       // we increment the cost because we need to insert a ext or
       // trunc here.
       if (FoundMatchingSol) {
-        CandidateSols[Op].push_back(OpSol);
-        OperandSols[Op].push_back(OpSol);
+        CandidateSols[V].push_back(OpSol);
+        OperandSols[V].push_back(OpSol);
       } else {
         dbgs() << "Inside Update Operands Didn't find matching sol for "
                << *OpSol << "\n";
@@ -1058,11 +1134,11 @@ inline bool WideningIntegerArithmetic::updateOperands(
     if (!FoundMatchingSol) {
       dbgs()
           << "UPDATE OPERANDS INSIDE .. Didn't find matching sol for Operand "
-          << *Op << "\n";
+          << *V << "\n";
       dbgs() << "Trying to match with Inst with width--> " << InstrUpdatedWidth
              << "\n of Inst " << *I << "\n";
       dbgs() << "Solutions are for operand are ..->\n";
-      printInstrSols(Op);
+      printInstrSols(V);
 
       MatchingForAllOps = false;
     } else {
@@ -1078,6 +1154,7 @@ inline bool WideningIntegerArithmetic::updateOperands(
       }
     }
   }
+
   dbgs() << "Exiting updateOperands..\n";
   return MatchingForAllOps;
 }
@@ -1246,7 +1323,6 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
       unsigned short InstrUpdatedWidth = InstSol->getUpdatedWidth();
       dbgs() << "Inst updated width is --> " << InstrUpdatedWidth << "\n";
 
-      bool DiscardSolution = false;
       // TODO: if an Operand is an Instruction with uses, probably we need to
       // check their solutions and the users and so on..?
       DenseMap<Value *, SolutionSet> CandidateSols;
@@ -1261,12 +1337,6 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         dbgs() << "And width is --> " << InstrUpdatedWidth << "\n";
         dbgs() << "Ignoring width --> " << InstrUpdatedWidth << "\n";
         continue;
-      }
-      bool MatchingPhis = false;
-      bool isPhi = false;
-      if (auto *PHI = dyn_cast<PHINode>(Instr)) {
-        // MatchingPhis = checkPHISols(Instr, InstSol, CandidateSols);
-        // isPhi = true;
       }
 
       dbgs() << "Checking Instr Width " << InstrUpdatedWidth << "\n";
@@ -1366,7 +1436,6 @@ void WideningIntegerArithmetic::calcBestUserSols(Function &F) {
         SolsPerInst[Instr].UserSols = UserSols;
         SolsPerInst[Instr].InstSols[Instr].push_back(InstSol);
       } else if (AllMatching == 0 || MatchingForAllOps == 0) {
-        DiscardSolution = true;
         dbgs() << "AllMatching for Users is " << AllMatching << "\n";
         dbgs() << "MatchingForAllOps for Operands is " << MatchingForAllOps
                << "\n";
@@ -2622,7 +2691,7 @@ bool WideningIntegerArithmetic::applyPHI(Instruction *I,
       }
       // applyChain(I);
     } else if (auto *CI = dyn_cast<ConstantInt>(V)) {
-      int FoundWidth = 0;
+      // int FoundWidth = 0;
       for (auto *CSol : AvailableSolutions[CI]) {
         if (CSol->getUpdatedWidth() == NewWidth) {
           CI->mutateType(getTypeFromInteger(NewWidth));
@@ -2802,6 +2871,9 @@ bool WideningIntegerArithmetic::applySingleSol(
   Type *NewTy = getTypeFromInteger(Sol->getUpdatedWidth());
   switch (SolKind) {
   default: {
+    if (isa<BranchInst>(V)) {
+      return false;
+    }
     if (auto *SI = dyn_cast<SwitchInst>(V)) {
       Value *Cond = SI->getCondition();
       dbgs() << "Found Switch!! Cond is --> " << *Cond << "\n";
@@ -2968,6 +3040,15 @@ bool WideningIntegerArithmetic::applySingleSol(
   case WIAK_DROP_LOCOPY:
   case WIAK_DROP_LOIGNORE: {
     auto CanDropExtFromAllUsers = [&](Value *Inst) {
+      unsigned short OP0Width;
+      if (auto *InstI = dyn_cast<Instruction>(Inst)) {
+        OP0Width = getIntegerFromType((InstI->getOperand(0)->getType()));
+      } else if (auto *CI = dyn_cast<ConstantInt>(Inst)) {
+        OP0Width = CI->getValue().getBitWidth();
+      } else {
+        dbgs() << "We don't know how to drop ext on " << Inst << "\n";
+        assert(0);
+      }
       for (auto *U : Inst->users()) {
         if (auto *UseI = dyn_cast<Instruction>(U)) {
           // TODO: how to get the BestUserSol of the Inst
@@ -2977,18 +3058,30 @@ bool WideningIntegerArithmetic::applySingleSol(
             // assert(0 && "Cannot have a no sol here");
             continue;
           }
+          dbgs() << "v101New inst width check --> " << *(Inst->getType())
+                 << "\n";
           auto *BestUseSol = UseIt->second;
           unsigned short NewUserWidth = BestUseSol->getUpdatedWidth();
           unsigned short UseFillTypeWidth = getKnownFillTypeWidth(UseI);
-          if ((!isLegalToPromote(UseI) ||
-               UseFillTypeWidth > Sol->getUpdatedWidth()) &&
-              NewUserWidth != Sol->getUpdatedWidth()) {
+
+          dbgs() << "v111Trying to drop ext ---> " << *Inst << "\n";
+          dbgs() << "Checking user ---> " << *UseI << "\n";
+          dbgs() << "Checking best sol of user is  ---> " << *BestUseSol
+                 << "\n";
+          dbgs() << "New user  sol width is  ---> " << NewUserWidth << "\n";
+          dbgs() << "use  filltype width is  ---> " << UseFillTypeWidth << "\n";
+          // FIXME: add more cases to complete.
+          if ((!isLegalToPromote(UseI) && OP0Width != NewUserWidth)) {
             // TODO: Maybe count users that we cannot promote or drop
             // the extension and use that information? If we can drop
             // the extension to most users maybe we can create another
             // extension for the remaining users??
             return false;
           }
+          // if (auto *CmpSol = dyn_cast<WIA_ICMP>(BestUseSol)) {
+          //   unsigned short CmpUpdatedWidth = CmpSol->getUpdatedIcmpWidth();
+          //   if (CmpUpdatedWidth)
+          // }
         }
       }
       return true;
