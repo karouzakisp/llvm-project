@@ -245,6 +245,8 @@ private:
 
   void updateSwitchLabels(Instruction *I, Type *OldType, Type *NewType);
   Value *getPhiSuccessor(Value *V);
+  inline bool isBranchOnlyUser(Instruction *Instr);
+  inline bool isExtOpcode(Instruction *Instr);
 
   std::vector<unsigned short> IntegerSizes = {8, 16, 32, 64};
 
@@ -2371,6 +2373,12 @@ inline int WideningIntegerArithmetic::getIntegerFromType(Type *Ty) {
   }
 }
 
+inline bool WideningIntegerArithmetic::isExtOpcode(Instruction *Instr) {
+  if (isa<ZExtInst>(Instr) || isa<SExtInst>(Instr))
+    return true;
+  return false;
+}
+
 inline unsigned
 WideningIntegerArithmetic::getExtCost(Instruction *Instr,
                                       const WideningIntegerSolutionInfo *Sol,
@@ -2409,7 +2417,8 @@ WideningIntegerArithmetic::visitWIDEN(Instruction *Instr,
     return Solutions;
   }
   for (const WideningIntegerSolutionInfo *Sol : Sols) {
-    LLVM_DEBUG(dbgs() << "Inside visitWiden Iterating Sol --> " << Sol << '\n');
+    dbgs() << "Inside visitWiden for " << *Instr << " Iterating Sol --> "
+           << *Sol << '\n';
     unsigned SolOpc = Sol->getOpcode();
     if (SolOpc == FILL_INST_OPC || Sol->getNewOpcode() == FILL_INST_OPC)
       continue;
@@ -2421,7 +2430,7 @@ WideningIntegerArithmetic::visitWIDEN(Instruction *Instr,
       continue;
     for (int IntegerSize : IntegerSizes) {
       EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
-      if (IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||
+      if (IntegerSize < FillTypeWidth || IntegerSize <= Sol->getWidth() ||
           !TLI->isOperationLegal(ExtensionOpc, NewVT)) {
         continue;
       }
@@ -2467,7 +2476,7 @@ WideningIntegerArithmetic::visitWIDEN_GARBAGE(Instruction *Instr,
       continue;
     for (int IntegerSize : IntegerSizes) {
       EVT NewVT = EVT::getIntegerVT(*Ctx, IntegerSize);
-      if (IntegerSize < FillTypeWidth || IntegerSize < Sol->getWidth() ||
+      if (IntegerSize < FillTypeWidth || IntegerSize <= Sol->getWidth() ||
           !TLI->isOperationLegal(ISD::ANY_EXTEND, NewVT)) {
         continue;
       }
@@ -2706,6 +2715,19 @@ bool WideningIntegerArithmetic::applyPHI(Instruction *I,
   return false;
 }
 
+inline bool WideningIntegerArithmetic::isBranchOnlyUser(Instruction *Instr) {
+  if (Instr->getNumUses() == 1) {
+    auto *FirstUse = &*Instr->use_begin();
+    // It doesn't make sense to insert an extension if
+    // we have only a branch Inst.
+    // TODO: where is the best place to check this? in apply
+    // probably isn't the best place but suffices for now.
+    if (isa<BranchInst>(FirstUse->getUser())) {
+      return true;
+    }
+  }
+  return false;
+}
 void WideningIntegerArithmetic::replaceAllUsersOfWith(Value *From, Value *To) {
   SmallVector<Instruction *, 4> Users;
   Instruction *InstTo = dyn_cast<Instruction>(To);
@@ -2743,6 +2765,8 @@ void WideningIntegerArithmetic::replaceAllUsersOfWith(Value *From, Value *To) {
       }
       WideningIntegerSolutionInfo *NewSol = *SolIt;
       applyPHI(U, NewSol);
+    } else if (isa<BranchInst>(U)) {
+      DoReplace = false;
     }
     if (DoReplace)
       U->replaceUsesOfWith(From, To);
@@ -2762,7 +2786,7 @@ bool WideningIntegerArithmetic::applySingleSol(
   // on.
   // FIXME: when applying WIAK_DROP_EXT and then we apply WIAK_WIDEN
   // the ext type might change from zext to sext or vice verca
-  dbgs() << "123456 Applying Sol for Value " << *V << "\n";
+  dbgs() << "123456 Applying Sol for Value " << *V << "\n *Sol \n";
   if (AppliedSols.contains(V) || isa<BranchInst>(V)) {
     dbgs() << "We have already applied a Solution for this Value " << *V
            << "\n";
@@ -2890,6 +2914,8 @@ bool WideningIntegerArithmetic::applySingleSol(
       dbgs() << "Old Type is --> " << *(Cond->getType())
              << " While new type is " << *NewType << "\n";
       if (Cond->getType() != NewType) {
+        dbgs() << "Mutating Type on " << *Cond << "\n";
+        dbgs() << "From " << *(Cond->getType()) << "to " << *NewType << "\n";
         Cond->mutateType(NewType);
         SI->setCondition(Cond);
         dbgs() << "Setting Switch Cond..\n";
@@ -2932,18 +2958,22 @@ bool WideningIntegerArithmetic::applySingleSol(
       }
       break;
     }
+    break;
   }
   case WIAK_NOOP:
-    return false;
     break;
   case WIAK_WIDEN:
   case WIAK_WIDEN_GARBAGE: {
     if (auto *Instr = dyn_cast<Instruction>(V)) {
+      if (isBranchOnlyUser(Instr)) {
+        break;
+      }
       Instruction *InsertPt = Instr;
       if (auto *Arg = dyn_cast<Argument>(V)) {
         BasicBlock &BB = Arg->getParent()->front();
         InsertPt = &*BB.getFirstInsertionPt();
       }
+      dbgs() << "Inserting Extension on " << *V << " take care!!!\n";
       InsertExt(V, InsertPt, NewTy);
       Promoted.insert(Instr);
       AppliedSols.insert(V);
@@ -3023,6 +3053,10 @@ bool WideningIntegerArithmetic::applySingleSol(
   }
   case WIAK_FILL: {
     if (auto *Instr = dyn_cast<Instruction>(V)) {
+      if (isBranchOnlyUser(Instr)) {
+        break;
+      }
+
       Type *TruncTy = getTypeFromInteger(Sol->getFillTypeWidth());
       Type *ExtTy = getTypeFromInteger(Sol->getUpdatedWidth());
       dbgs() << "Sol is " << *Sol << "\n";
@@ -3071,7 +3105,10 @@ bool WideningIntegerArithmetic::applySingleSol(
           dbgs() << "New user  sol width is  ---> " << NewUserWidth << "\n";
           dbgs() << "use  filltype width is  ---> " << UseFillTypeWidth << "\n";
           // FIXME: add more cases to complete.
-          if ((!isLegalToPromote(UseI) && OP0Width != NewUserWidth)) {
+          if (OP0Width != NewUserWidth) {
+            // NOTE: NewUserWidth < OP0Width &&
+            //! isLegalToPromote(UseI)) can be done as a check but then
+            // we need to mutate those users.
             // TODO: Maybe count users that we cannot promote or drop
             // the extension and use that information? If we can drop
             // the extension to most users maybe we can create another
@@ -3131,6 +3168,9 @@ bool WideningIntegerArithmetic::applySingleSol(
   case WIAK_PHI: {
     auto OldWidth = getIntegerFromType(V->getType());
     auto NewWidth = Sol->getUpdatedWidth();
+    if (OldWidth == NewWidth) {
+      break;
+    }
     Type *NewTy = getTypeFromInteger(NewWidth);
     dbgs() << "Mutating Type on --> " << *V << "\n";
     dbgs() << "From " << *(V->getType()) << "to " << *NewTy << "\n";
@@ -3253,16 +3293,23 @@ bool WideningIntegerArithmetic::applyChain(Instruction *Instr) {
     dbgs() << "Going to apply best Sols to users and operands\n";
     for (auto &Combination : BestSolsUsersOpsCombination) {
       Value *UserOrOp = Combination.first;
-      if (NewInsts.contains(UserOrOp) || isa<CallInst>(UserOrOp)) {
+      if (NewInsts.contains(UserOrOp) || isa<CallInst>(UserOrOp) ||
+          isa<BranchInst>(UserOrOp)) { // TODO: check if we always can discard
+                                       // br inst probably yes)
         continue;
       }
-      dbgs() << "Getting Sol!! for User --> " << *UserOrOp << "\n";
+      dbgs() << "Getting Sol!! for User --> " << *UserOrOp << " for Instr "
+             << *I << "\n";
       if (!UserOrOp) {
         dbgs() << "Failed to find UserOrOp..\n";
         assert(0);
       }
       if (auto *UserInst = dyn_cast<Instruction>(UserOrOp)) {
         auto BestSolIt = BestUserOpsSolsPerInst.find(UserInst);
+        if (BestSolIt == BestUserOpsSolsPerInst.end()) {
+          dbgs() << "Failed to find best sol user is " << UserInst << "\n";
+          printInstrSols(UserOrOp);
+        }
         assert(BestSolIt != BestUserOpsSolsPerInst.end() &&
                "Didn't find user entry best sols");
         // UserOrOp and value BestSol.
@@ -3307,8 +3354,15 @@ bool WideningIntegerArithmetic::applyChain(Instruction *Instr) {
           }
           dbgs() << "Operand is --> " << *Operand << "\n";
           printInstrSols(Operand);
+          // do not apply an extension to something that is already extended.
+          auto SolKnd = BestSol->getKind();
+          if ((SolKnd == WIAK_WIDEN || SolKnd == WIAK_FILL) &&
+              isExtOpcode(UserInst)) {
+            continue;
+          }
           dbgs() << "for Operand --> " << *Operand << "from User-- > "
                  << *UserInst << " Applying Sol-- >" << *BestSol << "\n";
+
           auto UIt = BestSolPerInst.find(UserInst);
           if (UIt != BestSolPerInst.end()) {
             auto *bestUserInstSol = UIt->second;
