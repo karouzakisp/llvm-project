@@ -164,10 +164,25 @@ void DemandedBits::determineLiveOperandBits(
     }
     break;
   case Instruction::Mul:
-    // Find the highest live output bit. We don't need any more input
-    // bits than that (adds, and thus subtracts, ripple only to the
-    // left).
-    AB = APInt::getLowBitsSet(BitWidth, AOut.getActiveBits());
+    const APInt *C;
+    if (OperandNo == 0) {
+      // to have output bits 0...H-1 we need the input bits
+      // 0...(H - ceiling(log_2(C)))
+      if (match(UserI->getOperand(1), m_APInt(C))) {
+        Log2_64_Ceil(D);
+        auto LogC = C->isOne() ? 0 : C->logBase2() + 1;
+        unsigned Need =
+            AOut.getActiveBits() > LogC ? AOut.getActiveBits() - LogC : 0;
+        AB = APInt::getLowBitsSet(BitWidth, Need);
+      } else { // TODO: we can possibly check for Op0 constant too
+        AB = APInt::getLowBitsSet(BitWidth, AOut.getActiveBits());
+      }
+    } else {
+      // Find the highest live output bit. We don't need any more input
+      // bits than that (adds, and thus subtracts, ripple only to the
+      // left).
+      AB = APInt::getLowBitsSet(BitWidth, AOut.getActiveBits());
+    }
     break;
   case Instruction::Shl:
     if (OperandNo == 0) {
@@ -246,6 +261,35 @@ void DemandedBits::determineLiveOperandBits(
     else
       AB &= ~(Known.One & ~Known2.One);
     break;
+  case Instruction::UDiv:
+  case Instruction::URem:
+  case Instruction::SDiv:
+  case Instruction::SRem: {
+    auto Opc = UserI->getOpcode();
+    auto IsDiv = Opc == Instruction::UDiv || Opc == Instruction::SDiv;
+    bool IsSigned = Opc == Instruction::SDiv || Opc == Instruction::SRem;
+    if (OperandNo == 0) {
+      const APInt *DivAmnt;
+      if (match(UserI->getOperand(1), m_APInt(DivAmnt))) {
+        uint64_t D = DivAmnt->getZExtValue();
+        if (isPowerOf2_64(D)) {
+          unsigned Sh = Log2_64(D);
+          if (IsDiv) {
+            AB = AOut.shl(Sh);
+          } else {
+            AB = AOut & APInt::getLowBitsSet(BitWidth, Sh);
+          }
+        } else { // Non power of 2 constant div
+          unsigned LowQ = AOut.getActiveBits();
+          unsigned Need = LowQ + Log2_64_Ceil(D);
+          if (IsSigned)
+            Need++;
+          AB = APInt::getLowBitsSet(BitWidth, std::min(BitWidth, Need));
+        }
+      }
+    }
+    break;
+  }
   case Instruction::Xor:
   case Instruction::PHI:
     AB = AOut;
