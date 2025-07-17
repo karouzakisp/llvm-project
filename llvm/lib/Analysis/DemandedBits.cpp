@@ -165,22 +165,29 @@ void DemandedBits::determineLiveOperandBits(
     break;
   case Instruction::Mul:
     const APInt *C;
-    if (OperandNo == 0) {
+    if (OperandNo == 0 && match(UserI->getOperand(1), m_APInt(C))) {
       // to have output bits 0...H-1 we need the input bits
       // 0...(H - ceiling(log_2(C)))
-      if (match(UserI->getOperand(1), m_APInt(C))) {
-        auto LogC = C->isOne() ? 0 : C->logBase2() + 1;
-        unsigned Need =
-            AOut.getActiveBits() > LogC ? AOut.getActiveBits() - LogC : 0;
-        AB = APInt::getLowBitsSet(BitWidth, Need);
-      } else { // TODO: we can possibly check for Op0 constant too
-        AB = APInt::getLowBitsSet(BitWidth, AOut.getActiveBits());
-      }
+      unsigned t = C->countr_zero();
+      unsigned H = AOut.getActiveBits();
+      unsigned Need = H > t ? H - t : 0;
+      AB = APInt::getLowBitsSet(BitWidth, Need);
+    } else if (OperandNo == 1 && match(UserI->getOperand(0), m_APInt(C))) {
+      unsigned t = C->countr_zero();
+      unsigned H = AOut.getActiveBits();
+      unsigned Need = H > t ? H - t : 0;
+      AB = APInt::getLowBitsSet(BitWidth, Need);
     } else {
       // Find the highest live output bit. We don't need any more input
       // bits than that (adds, and thus subtracts, ripple only to the
       // left).
+      ComputeKnownBits(BitWidth, UserI->getOperand(0), UserI->getOperand(1));
       AB = APInt::getLowBitsSet(BitWidth, AOut.getActiveBits());
+      if (OperandNo == 0) {
+        AB &= ~Known.Zero;
+      } else if (OperandNo == 1) {
+        AB &= ~Known2.Zero;
+      }
     }
     break;
   case Instruction::Shl:
