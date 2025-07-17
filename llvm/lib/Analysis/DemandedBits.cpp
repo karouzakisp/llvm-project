@@ -169,7 +169,6 @@ void DemandedBits::determineLiveOperandBits(
       // to have output bits 0...H-1 we need the input bits
       // 0...(H - ceiling(log_2(C)))
       if (match(UserI->getOperand(1), m_APInt(C))) {
-        Log2_64_Ceil(D);
         auto LogC = C->isOne() ? 0 : C->logBase2() + 1;
         unsigned Need =
             AOut.getActiveBits() > LogC ? AOut.getActiveBits() - LogC : 0;
