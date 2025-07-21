@@ -302,6 +302,24 @@ static bool canEvaluateTruncated(Value *V, Type *Ty, InstCombinerImpl &IC,
     }
     break;
   }
+  case Instruction::SDiv:
+  case Instruction::SRem: {
+    uint32_t OrigBitWidth = OrigTy->getScalarSizeInBits();
+    uint32_t BitWidth = Ty->getScalarSizeInBits();
+    assert(BitWidth < OrigBitWidth && "Unexpected bitwidths!");
+    APInt Mask = APInt::getBitsSetFrom(OrigBitWidth, BitWidth);
+    KnownBits DivndKnownBits =
+        llvm::computeKnownBits(I->getOperand(0), IC.getDataLayout());
+    KnownBits DivisorKnownBits =
+        llvm::computeKnownBits(I->getOperand(1), IC.getDataLayout());
+    if (DivndKnownBits.isNonNegative() && DivisorKnownBits.isNonNegative() &&
+        IC.MaskedValueIsZero(I->getOperand(0), Mask, I) &&
+        IC.MaskedValueIsZero(I->getOperand(1), Mask, I)) {
+      return canEvaluateTruncated(I->getOperand(0), Ty, IC, I) &&
+             canEvaluateTruncated(I->getOperand(1), Ty, IC, I);
+    }
+    break;
+  }
   case Instruction::Shl: {
     // If we are truncating the result of this SHL, and if it's a shift of an
     // inrange amount, we can always perform a SHL in a smaller type.
