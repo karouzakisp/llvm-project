@@ -120,9 +120,3 @@ Join [LLVM Discourse forums](https://discourse.llvm.org/), [discord chat](https:
 
 The LLVM project has adopted a [code of conduct](https://llvm.org/docs/CodeOfConduct.html) for
 participants to all modes of communication within the project.
-
-# Funding
-This work was in part funded by the project AERO
-
-# Testing
-If you want to test the wia pass, build and run "opt -widening-integer-arithmetic <file>
