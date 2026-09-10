@@ -12049,29 +12049,16 @@ void BoUpSLP::buildTreeRec(ArrayRef<Value *> VLRef, unsigned Depth,
           CurrentLoopNest.assign(NewLoopNest);
         } else if (CommonLen < CurrentLoopNest.size() &&
                    CommonLen < NewLoopNest.size()) {
-          // Divergence below the common prefix: the tree now spans sibling
-          // loops at depth CommonLen. Admitting them into one tree makes
-          // the profitability decision JOINT across both siblings, so a
-          // very hot sibling could otherwise let an unprofitable cold
-          // sibling ride along "for free" (per-entry scaling of the cold
-          // sibling's entries would be dwarfed by the hot one). Require
-          // SCEV-proven equal backedge-taken counts for the diverging
-          // siblings before joining; otherwise force gather.
-          const Loop *SibA = CurrentLoopNest[CommonLen];
-          const Loop *SibB = NewLoopNest[CommonLen];
-          const SCEV *BecA = SE->getBackedgeTakenCount(SibA);
-          const SCEV *BecB = SE->getBackedgeTakenCount(SibB);
-          if (isa<SCEVCouldNotCompute>(BecA) || BecA != BecB) {
-            BailOutToGather();
-            return;
-          }
+          // Allow sibling loops in the same candidate.
+          // Profitability may trim some sub trees to gathers.
           if (!ValidateMergedBTCs(CommonLen + 1)) {
             BailOutToGather();
             return;
           }
           if (MergedLoopBTCs.size() <= CommonLen)
             MergedLoopBTCs.resize(CommonLen + 1, nullptr);
-          MergedLoopBTCs[CommonLen] = BecA;
+          // MergedLoopBTCs[CommonLen] = BecA;
+          MergedLoopBTCs[CommonLen] = nullptr;
           CurrentLoopNest.truncate(CommonLen);
         } else if (NewLoopNest.size() > CurrentLoopNest.size()) {
           if (!ValidateMergedBTCs(CurrentLoopNest.size())) {
@@ -15441,11 +15428,13 @@ uint64_t BoUpSLP::getScaleToLoopIterations(const TreeEntry &TE, Value *Scalar,
     }
     if (!Parent)
       Parent = U->getParent();
-  } else if (TE.isGather() || TE.State == TreeEntry::SplitVectorize) {
+  } else if (TE.isGather() || TE.State == TreeEntry::SplitVectorize ||
+             TransformedToGatherNodes.contains(&TE)) {
     EdgeInfo EI = TE.UserTreeIndex;
     while (EI.UserTE) {
       if (EI.UserTE->isGather() ||
-          EI.UserTE->State == TreeEntry::SplitVectorize) {
+          EI.UserTE->State == TreeEntry::SplitVectorize ||
+          TransformedToGatherNodes.contains(EI.UserTE)) {
         EI = EI.UserTE->UserTreeIndex;
         continue;
       }
@@ -15504,10 +15493,12 @@ uint64_t BoUpSLP::getLoopNestScale(const Loop *L) {
 
 uint64_t BoUpSLP::getGatherNodeEffectiveScale(const TreeEntry &TE,
                                               Instruction *U) {
-  // Only meaningful for gather/buildvector-like entries; the per-lane
-  // insertelements that make up such an entry are LICM-hoistable by
-  // optimizeGatherSequence() when their operand is loop-invariant.
-  assert((TE.isGather() || TE.State == TreeEntry::SplitVectorize) &&
+  // Only meaningful for gather/buildvector-like/TransformToGather entries;
+  // the per-lane insertelements that make up such an entry are
+  // LICM-hoistable by  optimizeGatherSequence() when their operand
+  // is loop-invariant.
+  assert((TE.isGather() || TE.State == TreeEntry::SplitVectorize ||
+          TransformedToGatherNodes.contains(&TE)) &&
          "Expected gather/split tree entry.");
 
   uint64_t BaseScale = getScaleToLoopIterations(TE, nullptr, U);
@@ -15552,7 +15543,8 @@ uint64_t BoUpSLP::getGatherNodeEffectiveScale(const TreeEntry &TE,
 }
 
 uint64_t BoUpSLP::getEntryEffectiveScale(const TreeEntry &TE, Instruction *U) {
-  if (TE.isGather() || TE.State == TreeEntry::SplitVectorize)
+  if (TE.isGather() || TE.State == TreeEntry::SplitVectorize ||
+      TransformedToGatherNodes.contains(&TE))
     return getGatherNodeEffectiveScale(TE, U);
   return getScaleToLoopIterations(TE);
 }
@@ -18730,6 +18722,10 @@ BoUpSLP::calculateTreeCostAndTrimNonProfitable(ArrayRef<Value *> VectorizedVals,
     InstructionCost C = getEntryCost(TE, VectorizedVals, CheckedExtracts);
     if (!C.isValid() || C == 0)
       return C;
+    if (TransformedToGatherNodes.contains(TE)) {
+      uint64_t Scale = getEntryEffectiveScale(*TE);
+      return C * Scale;
+    }
     uint64_t Scale = EntryToScale.lookup(TE);
     if (!Scale)
       Scale = getEntryEffectiveScale(*TE);
