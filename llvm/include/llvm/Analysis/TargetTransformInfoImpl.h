@@ -83,6 +83,28 @@ public:
   }
 
   virtual InstructionCost
+  getWIAPromotionCost(const TTI::WIAPromotionInfo &Info,
+                      TTI::TargetCostKind CostKind) const {
+    return TTI::TCC_Free;
+  }
+
+  virtual InstructionCost
+  getWIAPromotionBenefit(const TTI::WIAPromotionInfo &Info,
+                         TTI::TargetCostKind CostKind) const {
+    return TTI::TCC_Free;
+  }
+
+  virtual int getWIAPromotionProfitBonus(const TTI::WIAPromotionInfo &Info,
+                                         TTI::TargetCostKind CostKind) const {
+    return 0;
+  }
+
+  virtual int getWIAPromotionGreedyCost(const TTI::WIAPromotionInfo &Info,
+                                        TTI::TargetCostKind CostKind) const {
+    return 0;
+  }
+
+  virtual InstructionCost
   getInstructionCost(const User *U, ArrayRef<const Value *> Operands,
                      TTI::TargetCostKind CostKind) const {
     llvm_unreachable("Not implemented");
@@ -482,6 +504,12 @@ public:
   virtual bool LSRWithInstrQueries() const { return false; }
 
   virtual bool isTruncateFree(Type *Ty1, Type *Ty2) const { return false; }
+
+  virtual bool isLoadExtFreeForMultipleUses(const LoadInst *Load, Type *DstTy,
+                                            unsigned ExtOpcode,
+                                            bool AllExtsInLoadBlock) const {
+    return false;
+  }
 
   virtual bool isProfitableToHoist(Instruction *I) const { return true; }
 

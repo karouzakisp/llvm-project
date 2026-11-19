@@ -18917,6 +18917,13 @@ bool AArch64TargetLowering::isTruncateFree(EVT VT1, EVT VT2) const {
   return NumBits1 > NumBits2;
 }
 
+bool AArch64TargetLowering::isOutgoingArgumentTruncateFree(
+    const CallBase &CB, unsigned ArgNo, Type *WideTy,
+    unsigned ExtOpcode) const {
+  // Check the supported AArch64 ABI/type cases here.
+  return false;
+}
+
 /// Check if it is profitable to hoist instruction in then/else to if.
 /// Not profitable if I and it's user can form a FMA instruction
 /// because we prefer FMSUB/FMADD.

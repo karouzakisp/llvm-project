@@ -2367,6 +2367,125 @@ InstructionCost RISCVTTIImpl::getCastInstrCost(unsigned Opcode, Type *Dst,
   return BaseT::getCastInstrCost(Opcode, Dst, Src, CCH, CostKind, I);
 }
 
+bool RISCVTTIImpl::isLoadExtFreeForMultipleUses(const LoadInst *Load,
+                                                Type *DstTy, unsigned ExtOpcode,
+                                                bool AllExtsInLoadBlock) const {
+  if (!ST->is64Bit() || ExtOpcode != Instruction::ZExt || !Load->isSimple() ||
+      !DstTy->isIntegerTy(64))
+    return false;
+
+  Type *LoadTy = Load->getType();
+  if (!LoadTy->isIntegerTy(8) && !LoadTy->isIntegerTy(16))
+    return false;
+
+  // An unextended byte load already selects LBU. A halfword load can select
+  // LH when exported to another block, leaving a separate zero extension.
+  if (LoadTy->isIntegerTy(16) && !AllExtsInLoadBlock)
+    return false;
+
+  return TLI->isLoadLegal(TLI->getValueType(DL, DstTy),
+                          TLI->getValueType(DL, LoadTy), Load->getAlign(),
+                          Load->getPointerAddressSpace(), ISD::ZEXTLOAD, false);
+}
+
+// Check if the load has only ZExt users in the same block.
+static bool hasOnlyLocalZeroExtUsers(const LoadInst *LI) {
+  if (LI->use_empty())
+    return false;
+
+  // All of the zexts cannot be converted to sext and they are
+  // in the same block
+  return llvm::all_of(LI->users(), [&](const User *U) {
+    const auto *ZExt = dyn_cast<ZExtInst>(U);
+    return ZExt && ZExt->getDestTy()->isIntegerTy(64) && !ZExt->hasNonNeg() &&
+           ZExt->getParent() == LI->getParent();
+  });
+}
+
+// Check if it's possible to use ZBA to fold the ZExt into a GEP index
+static bool isZbaGEPFoldCandidate(const CastInst &Ext, const DataLayout &DL) {
+  if (Ext.getOpcode() != Instruction::ZExt ||
+      !Ext.getSrcTy()->isIntegerTy(32) || !Ext.getDestTy()->isIntegerTy(64) ||
+      !Ext.hasOneUse())
+    return false;
+
+  const auto *GEP = dyn_cast<GetElementPtrInst>(*Ext.user_begin());
+  if (!GEP || GEP->getParent() != Ext.getParent() ||
+      GEP->getNumIndices() != 1 || GEP->getOperand(1) != &Ext ||
+      DL.getIndexSizeInBits(GEP->getPointerAddressSpace()) != 64)
+    return false;
+
+  TypeSize Scale = DL.getTypeAllocSize(GEP->getSourceElementType());
+  if (Scale.isScalable())
+    return false;
+
+  uint64_t Bytes = Scale.getFixedValue();
+  return Bytes == 2 || Bytes == 4 || Bytes == 8;
+}
+
+InstructionCost
+RISCVTTIImpl::getWIAPromotionCost(const TTI::WIAPromotionInfo &Info,
+                                  TTI::TargetCostKind CostKind) const {
+
+  if (CostKind != TTI::TCK_CodeSize || !ST->is64Bit())
+    return 0;
+
+  if (Info.NumOfPromotedSelect && Info.NumOfZExtLoads)
+    return 100;
+
+  if (Info.SrcWidth != 32 || Info.DstWidth != 64)
+    return 0;
+
+  InstructionCost Cost = 0;
+
+  if (ST->hasStdExtZca()) {
+    for (const auto &Ext : Info.ExtendedLoads) {
+      if (Ext.ExtOpcode != Instruction::ZExt || Ext.MatCount == 0 ||
+          !Ext.Load->isSimple() || !Ext.Load->getType()->isIntegerTy(32))
+        continue;
+
+      if (hasOnlyLocalZeroExtUsers(Ext.Load))
+        continue;
+
+      // Widening can replace a compressible LW with an LWU.
+      Cost += 1;
+    }
+  }
+
+  if (ST->hasStdExtZba()) {
+    for (const CastInst *Ext : Info.RemovedExtensions) {
+      // if we cannot fold the Extension we must account for the cost.
+      // Otherwise, we might overestimate the benefit
+      // Becaue the extension is folded into the address instruction.
+      if (!isZbaGEPFoldCandidate(*Ext, DL))
+        continue;
+
+      InstructionCost CreditedCost =
+          getCastInstrCost(Ext->getOpcode(), Ext->getDestTy(), Ext->getSrcTy(),
+                           TTI::CastContextHint::Normal, CostKind, Ext);
+
+      if (!CreditedCost.isValid())
+        return CreditedCost;
+
+      if (CreditedCost > 0)
+        Cost += CreditedCost;
+    }
+  }
+
+  return Cost;
+}
+
+int RISCVTTIImpl::getWIAPromotionGreedyCost(
+    const TTI::WIAPromotionInfo &Info, TTI::TargetCostKind CostKind) const {
+  if (CostKind != TTI::TCK_CodeSize || !ST->is64Bit())
+    return 0;
+
+  if (Info.NumOfPromotedSelect && Info.NumOfZExtLoads)
+    return 100;
+
+  return 0;
+}
+
 unsigned RISCVTTIImpl::getEstimatedVLFor(VectorType *Ty) const {
   if (isa<ScalableVectorType>(Ty)) {
     const unsigned EltSize = DL.getTypeSizeInBits(Ty->getElementType());

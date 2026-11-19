@@ -237,6 +237,16 @@ public:
                    TTI::CastContextHint CCH, TTI::TargetCostKind CostKind,
                    const Instruction *I = nullptr) const override;
 
+  bool isLoadExtFreeForMultipleUses(const LoadInst *Load, Type *DstTy,
+                                    unsigned ExtOpcode,
+                                    bool AllExtsInLoadBlock) const override;
+
+  InstructionCost getWIAPromotionCost(const TTI::WIAPromotionInfo &IInfo,
+                                      TTI::TargetCostKind) const override;
+
+  int getWIAPromotionGreedyCost(const TTI::WIAPromotionInfo &Info,
+                                TTI::TargetCostKind CostKind) const override;
+
   InstructionCost
   getMinMaxReductionCost(Intrinsic::ID IID, VectorType *Ty, FastMathFlags FMF,
                          TTI::TargetCostKind CostKind) const override;

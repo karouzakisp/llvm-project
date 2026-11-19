@@ -8243,6 +8243,282 @@ InstructionCost X86TTIImpl::getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
   return InstructionCost::getInvalid();
 }
 
+InstructionCost
+X86TTIImpl::getWIAPromotionCost(const TTI::WIAPromotionInfo &Info,
+                                TTI::TargetCostKind CostKind) const {
+  if (CostKind != TTI::TCK_CodeSize)
+    return 0;
+
+  bool IsI32ToI64 = Info.SrcWidth == 32 && Info.DstWidth == 64;
+
+  unsigned Cost = 0;
+
+  // 16-bit Gpr ALU ops usually needed operand size prefix.
+  if (Info.DstWidth == 16)
+    Cost += Info.NumOfPromotedToI16;
+
+  // 64-bit GPR ALU ops need the Rex.w prefix
+  if (Info.DstWidth == 64)
+    Cost += Info.NumOfPromotedToI64;
+
+  if (Info.NumOfSignExtLoads > Info.NumExtsRemoved) {
+    Cost += (Info.NumOfSignExtLoads * 2);
+  }
+
+  auto getX86NotEncodingSize = [](unsigned NewWidth) -> unsigned {
+    switch (NewWidth) {
+    case 8:
+    case 32:
+      return 2;
+    case 16:
+    case 64:
+      return 3;
+    default:
+      return 0;
+    }
+  };
+
+  if (Info.NumOfPromotedNots) {
+    unsigned OldSize = getX86NotEncodingSize(Info.SrcWidth);
+    unsigned NewSize = getX86NotEncodingSize(Info.DstWidth);
+    if (OldSize && NewSize && NewSize > OldSize)
+      Cost += Info.NumOfPromotedNots * (NewSize - OldSize);
+  }
+
+  if (Info.RemovesExtCallArg && Info.RemovesFreeExt) {
+    return 100;
+  }
+
+  if (IsI32ToI64 && Info.LoopCarriedExtsRemoved == 1 &&
+      Info.LoopCarriedWideUses <= 1 && Info.LoopCarriedRelevantWidened >= 1)
+    Cost += 2;
+
+  // If the removed loop-carried ext only fed GEP indices and there is no shared
+  // promoted index arithmetic or extra GEP fanout, x86 usually does not recover
+  // enough code size to justify widening the IV/arithmetic.
+  if (IsI32ToI64 && Info.LoopCarriedGEPIndexExtsRemoved &&
+      Info.LoopCarriedExtsRemoved == Info.LoopCarriedGEPIndexExtsRemoved &&
+      Info.NumWideGEPIndexUses <= Info.NumGEPIndexExtsRemoved &&
+      Info.NumPromotedGEPIndexArith <= Info.NumGEPIndexExtsRemoved)
+    Cost += 1;
+
+  // Moving a narrow ext across a PHI can turn one local GEP-index extension
+  // into several incoming extensions and a wider PHI live range.
+  if (Info.DstWidth == 64 && Info.SrcWidth < 32 &&
+      Info.NumNarrowPhiGEPIndexExtsRemoved &&
+      Info.NumNarrowPhiExtraIncomingExts)
+    Cost += Info.NumNarrowPhiExtraIncomingExts;
+
+  // A loop-carried i32->i64 promotion with a boundary repair but no address-use
+  // or sign-ext-load win tends to increase x86 -Oz live ranges/spills. The
+  // removed ext is not enough to pay for widening the PHI/update and truncating
+  // back to i32.
+  if (IsI32ToI64 && Info.LoopCarriedPhisWidened &&
+      Info.LoopCarriedRelevantWidened && Info.NumBoundaryRepairs &&
+      Info.NumGEPIndexExtsRemoved == 0 && Info.NumOfSignExtLoads == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.NumOfInsertedExts == 0)
+    Cost += 2 * Info.NumBoundaryRepairs;
+
+  if (IsI32ToI64) {
+    unsigned DivRemCost = 0;
+
+    // 32-bit -> 64-bit x86 code-size deltas:
+    //   signed quotient:   cdq; idiv ecx              -> cqo; idiv rcx = +2
+    //   signed remainder:  above + mov eax, edx       -> above + mov rax, rdx
+    //   = +3 unsigned quotient: xor edx, edx; div ecx      -> xor edx, edx; div
+    //   rcx      = +1 unsigned rem:      above + mov eax, edx       -> above +
+    //   mov rax, rdx       = +2
+    DivRemCost += 2 * Info.NumSignedDiv;
+    DivRemCost += 3 * Info.NumSignedRem;
+    DivRemCost += (Info.RemovesFreeExt ? 3 : 1) * Info.NumUDiv;
+    DivRemCost += 2 * Info.NumURem;
+
+    // The WIA decision only rejects on TTIDiff < 0. If the table delta merely
+    // brings TTIDiff to 0, the greedy fallback can still accept the promotion.
+    // Add one global tie-breaker, not one per div/rem, to avoid over-penalizing
+    // graphs with multiple operations.
+    if (DivRemCost) {
+      Cost += DivRemCost + 1;
+
+      unsigned NumDivRem =
+          Info.NumSignedDiv + Info.NumSignedRem + Info.NumUDiv + Info.NumURem;
+
+      if (Info.NumPromotedInsts == NumDivRem && Info.NumExtsRemoved == 1 &&
+          Info.NumInstsToReplaceWithOperand == 0 && Info.NumOfInsertedExts == 0)
+        Cost += 1;
+    }
+  }
+
+  if (Info.DstWidth == 64 && Info.SrcWidth == 8 && Info.HasPhi &&
+      Info.NumPromotedInsts == 2 && Info.NumExtsRemoved == 1 &&
+      Info.NumOfSignExtLoads == 2 && Info.LoopCarriedGEPIndexExtsRemoved != 0) {
+    Cost += 1;
+  }
+
+  // Avoid turning:
+  //   (zext (and iN X, C) to i64)
+  // into:
+  //   (and i64 (sext X), C)
+  // This removes an extension but widens the mask op and may introduce a wider
+  // sign-extension. On x86 this is often larger, especially for i16 -> i64.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts >= 1 &&
+      Info.SrcWidth < 32 && Info.DstWidth == 64 && Info.HasAndWithConstantMask)
+    Cost += 5;
+
+  // Removing a single loop-carried GEP-index extension can still lose code size
+  // when it widens the PHI/update chain to i64 but only feeds one address use.
+  if (IsI32ToI64 && Info.LoopCarriedGEPIndexExtsRemoved == 1 &&
+      Info.LoopCarriedWideUses == 1 && Info.LoopCarriedRelevantWidened == 1 &&
+      Info.NumGEPIndexExtsRemoved == 1 && Info.NumBoundaryRepairs == 0 &&
+      Info.NumOfInsertedExts == 0)
+    Cost += 1;
+
+  // Example:
+  //   %dec = add i32 %x, -1
+  //   store i32 %dec, ...
+  //   %idx = sext i32 %dec to i64
+  // becomes:
+  //   %x64 = sext i32 %x to i64
+  //   %dec64 = add i64 %x64, -1
+  //   %repair = trunc i64 %dec64 to i32
+  //   store i32 %repair, ...
+  // This removes a GEP-index ext, but adds wider arithmetic plus a trunc
+  // repair; on x86 -Oz that is often not a size win for a one-instruction
+  // graph.
+  if (IsI32ToI64 && Info.NumBoundaryRepairs &&
+      Info.NumGEPIndexExtsRemoved == Info.NumExtsRemoved &&
+      Info.NumPromotedInsts == 1 && Info.NumInstsToReplaceWithOperand == 0 &&
+      Info.NumOfInsertedExts == 0)
+    Cost += 2 * Info.NumBoundaryRepairs;
+
+  if (IsI32ToI64 && Info.NumGuardedGEPIndexExtsRemoved) {
+    Cost += 3 * Info.NumGuardedGEPIndexExtsRemoved;
+  }
+
+  if (Info.RemovesBoolExt && Info.HasBool && Info.hasByteCmp &&
+      !Info.LoopCarriedExtHoistedOutOfLoop &&
+      Info.NumOfInsertedExts != Info.NumExtsRemoved)
+    Cost += 2;
+
+  // if (Info.LoopCarriedPhisWidened && Info.NumExtsRemoved == 1 &&
+  //     Info.SrcWidth < 32)
+  //   Cost += 2 * Info.LoopCarriedRelevantWidened;
+
+  // SROA / PassBuilder: pure narrow PHI cluster. One ext removed, but all we
+  // did is widen several PHIs.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.SrcWidth <= 8 &&
+      Info.NumPromotedInsts == Info.NumOfPromotedPhi &&
+      Info.NumOfPromotedPhi >= 3)
+    Cost += 3;
+
+  // SROA: i1 -> i8 select promotion, e.g. zext i1 moves into select form.
+  if (Info.NumExtsRemoved == 1 && Info.NumInstsToReplaceWithOperand == 0 &&
+      Info.SrcWidth == 1 && Info.DstWidth == 8 && Info.NumPromotedInsts == 2 &&
+      Info.NumOfPromotedSelect == 1 && Info.NumOfPromotedPhi == 0 &&
+      Info.NumOfPromotedToI16 == 0 && Info.NumOfPromotedToI64 == 0)
+    Cost += 2;
+
+  // TargetLowering: i16 -> i64 select/phi cluster, no real widened arithmetic
+  // win.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.SrcWidth == 16 &&
+      Info.DstWidth == 64 && Info.NumOfPromotedSelect >= 2 &&
+      Info.NumOfPromotedPhi >= 1 && Info.NumOfPromotedToI64 == 0)
+    Cost += 1;
+
+  // Hidden PHI-lowering cost: IR removes one ext by changing a narrow PHI into
+  // an i64 PHI. No incoming IR extends were inserted, but codegen may still
+  // need wider edge materialization/copies for the promoted PHI.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.SrcWidth <= 8 &&
+      Info.DstWidth == 64 && Info.NumPromotedInsts == 1 &&
+      Info.NumOfPromotedPhi == 1 && Info.NumOfPromotedToI64 == 0 &&
+      Info.NumOfPromotedSelect == 0 && Info.MaxPromotedPhiIncValues >= 3)
+    Cost += 0;
+  // Cost += 1;
+
+  // TODO: this removes opportunities too consider identifying
+  // when we hoist ext out of loop or insert/remove from same block.
+  /*
+  if (Info.RemovesBoolExt && Info.HasBool && Info.hasByteCmp)
+    Cost += 2;
+  */
+
+  // COFFObjectFile/StringRef-like case: one narrow PHI widened to i64 to remove
+  // one final zext, but incoming table-load values need their own zexts.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.SrcWidth <= 8 &&
+      Info.DstWidth == 64 && Info.NumPromotedInsts == 1 &&
+      Info.NumOfPromotedPhi == 1 && Info.NumOfPromotedSelect == 0 &&
+      Info.NumOfPromotedToI64 == 0 && Info.MaxPromotedPhiIncValues >= 3)
+    Cost += 3;
+
+  // Widening select/PHI control constants to i64 to remove one GEP-index zext.
+  if (Info.NumExtsRemoved == 1 && Info.NumOfInsertedExts == 0 &&
+      Info.NumInstsToReplaceWithOperand == 0 && Info.SrcWidth == 16 &&
+      Info.DstWidth == 64 && Info.NumOfPromotedPhi == 1 &&
+      Info.NumOfPromotedSelect >= 2 && Info.NumOfPromotedToI64 == 0)
+    Cost += 4;
+
+  if (IsI32ToI64) {
+    Cost += 2 * Info.NumBoundaryRepairs;
+  }
+
+  Cost += Info.NumOfInsertedExts * 3;
+
+  return Cost;
+}
+
+InstructionCost
+X86TTIImpl::getWIAPromotionBenefit(const TTI::WIAPromotionInfo &Info,
+                                   TTI::TargetCostKind CostKind) const {
+  if (CostKind != TTI::TCK_CodeSize)
+    return 0;
+
+  return 3 * (Info.NumExtsRemoved + Info.NumInstsToReplaceWithOperand) -
+         3 * (Info.RemovesFreeExt);
+}
+
+int X86TTIImpl::getWIAPromotionProfitBonus(const TTI::WIAPromotionInfo &Info,
+                                           TTI::TargetCostKind CostKind) const {
+  if (CostKind != TTI::TCK_CodeSize)
+    return 0;
+
+  return 2 * (Info.NumExtsRemoved + Info.NumInstsToReplaceWithOperand) -
+         2 * (Info.RemovesFreeExt);
+}
+
+int X86TTIImpl::getWIAPromotionGreedyCost(const TTI::WIAPromotionInfo &Info,
+                                          TTI::TargetCostKind CostKind) const {
+  if (CostKind != TTI::TCK_CodeSize)
+    return 0;
+
+  // On x86 most of the 64-bit arithmetic ops have 1 byte extra cost due to the
+  // rex.w prefix
+  unsigned Cost = 0;
+
+  // 16-bit Gpr ALU ops usually needed operand size prefix.
+  if (Info.DstWidth == 16)
+    Cost += Info.NumOfPromotedToI16;
+
+  if (Info.DstWidth == 64)
+    Cost += Info.NumOfPromotedToI64;
+
+  if (Info.NumOfSignExtLoads > Info.NumExtsRemoved) {
+    Cost += (Info.NumOfSignExtLoads * 2);
+  }
+  // Do not promote a xor -1, .. to a bigger type to remove an extension
+  // that costs extra on x86.
+  if (Info.NumOfPromotedNots >= Info.NumExtsRemoved) {
+    return 100;
+  }
+
+  Cost += Info.NumOfInsertedExts * 3;
+
+  return Cost;
+}
+
 InstructionCost X86TTIImpl::getBranchMispredictPenalty() const {
   // TODO: Hook MispredictPenalty of SchedMachineModel into this.
   return 14;

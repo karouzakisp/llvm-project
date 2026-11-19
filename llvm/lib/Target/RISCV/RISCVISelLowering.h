@@ -47,7 +47,14 @@ public:
   bool isTruncateFree(EVT SrcVT, EVT DstVT) const override;
   bool isTruncateFree(SDValue Val, EVT VT2) const override;
   bool isZExtFree(SDValue Val, EVT VT2) const override;
+  bool isSExtFree(Type *FromTy, Type *ToTy) const override;
+  bool isOutgoingArgumentTruncateFree(const CallBase &CB, unsigned ArgNo,
+                                      Type *WideTy,
+                                      unsigned ExtOpcode) const override;
+  bool isArgumentExtensionFree(const Argument &Arg, Type *DstTy,
+                               unsigned Opcode) const override;
   bool isSExtCheaperThanZExt(EVT SrcVT, EVT DstVT) const override;
+  bool isExtFreeImpl(const Instruction *Ext) const override;
   bool signExtendConstant(const ConstantInt *CI) const override;
   bool isCheapToSpeculateCttz(Type *Ty) const override;
   bool isCheapToSpeculateCtlz(Type *Ty) const override;

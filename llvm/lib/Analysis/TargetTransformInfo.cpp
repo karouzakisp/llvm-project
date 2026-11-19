@@ -261,6 +261,27 @@ unsigned TargetTransformInfo::getEstimatedNumberOfCaseClusters(
 }
 
 InstructionCost
+TargetTransformInfo::getWIAPromotionCost(const TTI::WIAPromotionInfo &Info,
+                                         TTI::TargetCostKind CostKind) const {
+  return TTIImpl->getWIAPromotionCost(Info, CostKind);
+}
+
+InstructionCost TargetTransformInfo::getWIAPromotionBenefit(
+    const TTI::WIAPromotionInfo &Info, TTI::TargetCostKind CostKind) const {
+  return TTIImpl->getWIAPromotionBenefit(Info, CostKind);
+}
+
+int TargetTransformInfo::getWIAPromotionProfitBonus(
+    const TTI::WIAPromotionInfo &Info, TTI::TargetCostKind CostKind) const {
+  return TTIImpl->getWIAPromotionProfitBonus(Info, CostKind);
+}
+
+int TargetTransformInfo::getWIAPromotionGreedyCost(
+    const WIAPromotionInfo &Info, TTI::TargetCostKind CostKind) const {
+  return TTIImpl->getWIAPromotionGreedyCost(Info, CostKind);
+}
+
+InstructionCost
 TargetTransformInfo::getInstructionCost(const User *U,
                                         ArrayRef<const Value *> Operands,
                                         enum TargetCostKind CostKind) const {
@@ -603,6 +624,13 @@ bool TargetTransformInfo::LSRWithInstrQueries() const {
 
 bool TargetTransformInfo::isTruncateFree(Type *Ty1, Type *Ty2) const {
   return TTIImpl->isTruncateFree(Ty1, Ty2);
+}
+
+bool TargetTransformInfo::isLoadExtFreeForMultipleUses(
+    const LoadInst *Load, Type *DstTy, unsigned ExtOpcode,
+    bool AllExtsInLoadBlock) const {
+  return TTIImpl->isLoadExtFreeForMultipleUses(Load, DstTy, ExtOpcode,
+                                               AllExtsInLoadBlock);
 }
 
 bool TargetTransformInfo::isProfitableToHoist(Instruction *I) const {

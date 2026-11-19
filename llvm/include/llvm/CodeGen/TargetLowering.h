@@ -3298,6 +3298,20 @@ public:
 
   virtual bool isProfitableToHoist(Instruction *I) const { return true; }
 
+  // Return true if the truncation is free.
+  // The truncation truncates the wide argument that is extended with ExtOpcode
+  virtual bool isOutgoingArgumentTruncateFree(const CallBase &CB,
+                                              unsigned ArgNo, Type *WideTy,
+                                              unsigned ExtOpcode) const {
+    return false;
+  }
+
+  // Return ture if extending this argument requires no additional instructions.
+  virtual bool isArgumentExtensionFree(const Argument &Arg, Type *DstTy,
+                                       unsigned Opcode) const {
+    return false;
+  }
+
   /// Return true if the extension represented by \p I is free.
   /// Unlikely the is[Z|FP]ExtFree family which is based on types,
   /// this method can use the context provided by \p I to decide

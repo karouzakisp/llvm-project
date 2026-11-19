@@ -502,6 +502,101 @@ public:
                                    ProfileSummaryInfo *PSI,
                                    BlockFrequencyInfo *BFI) const;
 
+  struct WIAPromotionInfo {
+    unsigned SrcWidth = 0;
+    unsigned DstWidth = 0;
+
+    unsigned NumPromotedInsts = 0;
+    unsigned NumExtsRemoved = 0;
+    unsigned NumOfInsertedExts = 0;
+    unsigned NumOfSignExtLoads = 0;
+    unsigned NumOfPromotedNots = 0;
+    unsigned NumBoundaryRepairs = 0;
+    unsigned NumInstsToReplaceWithOperand = 0;
+    unsigned NumNonFreeZExtMats = 0;
+    unsigned MaxPromotedPhiIncValues = 0;
+    unsigned NumOfZExtLoads = 0;
+    unsigned NumOfI32ZextLoads = 0;
+
+    // for RISC-V under Zbb and Zba
+    // Regressions appear when we change sexts to zexts
+    // that fold onto a load.
+    struct LoadExtInfo {
+      const LoadInst *Load;
+      unsigned ExtOpcode;
+      unsigned MatCount;
+      InstructionCost MeasuredExtCost = 0;
+    };
+
+    SmallVector<LoadExtInfo, 4> ExtendedLoads;
+    SmallVector<const CastInst *, 4> RemovedExtensions;
+
+    bool IsSourcePhiOrSelect = false;
+
+    // X86 architecture
+    unsigned NumOfPromotedToI16 = 0;
+    unsigned NumOfPromotedToI64 = 0;
+    unsigned NumOfPromotedSelect = 0;
+    unsigned NumOfPromotedPhi = 0;
+    unsigned NumOfDangerousOpcodes = 0;
+
+    unsigned NumSignedDiv = 0;
+    unsigned NumSignedRem = 0;
+    unsigned NumUDiv = 0;
+    unsigned NumURem = 0;
+
+    unsigned NumGEPIndexExtsRemoved = 0;
+    unsigned NumWideGEPIndexUses = 0;
+    unsigned NumPromotedGEPIndexArith = 0;
+    unsigned NumGuardedGEPIndexExtsRemoved = 0;
+
+    unsigned NumOfSignExtLoadMats = 0;
+
+    bool RemovesFreeExt = false;
+    bool RemovesExtCallArg = false;
+    bool RemovesBoolExt = false;
+
+    bool HasDangerousOpc = false;
+
+    bool HasPhi = false;
+    bool HasBool = false;
+    bool hasByteCmp = false;
+    bool hasComplexPattern = false;
+    bool hasMinMax = false;
+    bool HasAndWithConstantMask = false;
+
+    unsigned NumNarrowPhiGEPIndexExtsRemoved = 0;
+    unsigned NumNarrowPhiExtraIncomingExts = 0;
+
+    bool IsI32ToI64LoopCarried = false;
+    unsigned LoopCarriedPhisWidened = 0;
+    unsigned LoopCarriedExtsRemoved = 0;
+    unsigned LoopCarriedWideUses = 0;
+    unsigned LoopCarriedExtHoistedOutOfLoop = 0;
+    unsigned LoopCarriedRelevantWidened = 0;
+    unsigned LoopCarriedGEPIndexExtsRemoved = 0;
+  };
+
+  /// \return the estimated cost when promoting for the Widening Integer
+  /// Arithmetic (WIA) opt pass.
+  LLVM_ABI InstructionCost getWIAPromotionCost(const WIAPromotionInfo &Info,
+                                               TargetCostKind CostKind) const;
+
+  /// \return the estimated benefit when promoting for the Widening Integer
+  /// Arithmetic (WIA) opt pass.
+  LLVM_ABI InstructionCost getWIAPromotionBenefit(
+      const WIAPromotionInfo &Info, TargetCostKind CostKind) const;
+
+  /// \return a target-specific bonus for WIA's generic greedy profitability
+  /// model.
+  LLVM_ABI int getWIAPromotionProfitBonus(const WIAPromotionInfo &Info,
+                                          TargetCostKind CostKind) const;
+
+  /// \return a target-specific cost for WIA's generic greedy profitability
+  /// model.
+  LLVM_ABI int getWIAPromotionGreedyCost(const WIAPromotionInfo &Info,
+                                         TargetCostKind CostKind) const;
+
   /// Estimate the cost of a given IR user when lowered.
   ///
   /// This can estimate the cost of either a ConstantExpr or Instruction when
@@ -1084,6 +1179,14 @@ public:
   /// Ty2. e.g. On x86 it's free to truncate a i32 value in register EAX to i16
   /// by referencing its sub-register AX.
   LLVM_ABI bool isTruncateFree(Type *Ty1, Type *Ty2) const;
+
+  /// Return true if extending a load can provide a shared result for multiple
+  /// uses without an additional instruction.
+  /// The caller must ensure that other load users are compatible with the
+  /// requested extension. This query does not traverse the load's users.
+  LLVM_ABI bool isLoadExtFreeForMultipleUses(const LoadInst *Load, Type *DstTy,
+                                             unsigned ExtOpcode,
+                                             bool AllExtsInLoadBlock) const;
 
   /// Return true if it is profitable to hoist instruction in the
   /// then/else to before if.

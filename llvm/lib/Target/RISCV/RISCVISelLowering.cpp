@@ -36,12 +36,15 @@
 #include "llvm/CodeGen/SelectionDAGAddressAnalysis.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/IR/Argument.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IntrinsicsRISCV.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -2620,6 +2623,128 @@ bool RISCVTargetLowering::isZExtFree(SDValue Val, EVT VT2) const {
   }
 
   return TargetLowering::isZExtFree(Val, VT2);
+}
+
+bool RISCVTargetLowering::isExtFreeImpl(const Instruction *Ext) const {
+  auto SExt = dyn_cast<SExtInst>(Ext);
+  if (SExt) {
+    if (Subtarget.is64Bit() && SExt->getSrcTy()->isIntegerTy(32) &&
+        SExt->getDestTy()->isIntegerTy(64)) {
+      // Sext is always free on sign extended binary ops.
+      auto *Binop = dyn_cast<BinaryOperator>(SExt->getOperand(0));
+      if (!Binop)
+        return false;
+
+      unsigned Opc = Binop->getOpcode();
+      if ((Opc == Instruction::Add || Opc == Instruction::Sub) &&
+          Binop->hasNoSignedWrap())
+        return true;
+    }
+  }
+
+  auto Cast = dyn_cast<ZExtInst>(Ext);
+  if (!Cast)
+    return false;
+
+  if (!Subtarget.is64Bit() || !Cast->getSrcTy()->isIntegerTy(32) ||
+      !Cast->getDestTy()->isIntegerTy(64))
+    return false;
+
+  using namespace PatternMatch;
+
+  Value *V = Cast->getOperand(0);
+  const APInt *MaskC;
+  if (match(V, m_c_And(m_Value(V), m_APInt(MaskC)))) {
+    APInt Mask = *MaskC;
+
+    // Combine the constants to find the effective mask, if there is one.
+    if (match(V, m_c_And(m_Value(), m_APInt(MaskC))))
+      Mask &= *MaskC;
+    // if mask is between 0 and 2047, RV64 can apply the mask
+    // with an andi which clears upper bits too, making the zero extension
+    // free.
+    if (Mask.isIntN(11))
+      return true;
+  }
+
+  // zext nneg i32 to i64 can be free on RV64.
+  if (!Subtarget.is64Bit() || !Cast->hasNonNeg() ||
+      !Cast->getSrcTy()->isIntegerTy(32) || !Cast->getDestTy()->isIntegerTy(64))
+    return false;
+
+  const auto Op0 = dyn_cast<BinaryOperator>(Cast->getOperand(0));
+  if (!Op0 || Op0->getOpcode() != Instruction::URem)
+    return false;
+
+  const auto Divisor = dyn_cast<ConstantInt>(Op0->getOperand(1));
+  if (!Divisor)
+    return false;
+
+  const APInt &DivV = Divisor->getValue();
+  if (!DivV.isStrictlyPositive() || DivV.isPowerOf2())
+    return false;
+
+  return Subtarget.hasStdExtM() &&
+         isIntDivCheap(MVT::i32, Cast->getFunction()->getAttributes());
+}
+
+bool RISCVTargetLowering::isOutgoingArgumentTruncateFree(
+    const CallBase &CB, unsigned ArgNo, Type *WideTy,
+    unsigned ExtOpcode) const {
+
+  if (!Subtarget.is64Bit() || !WideTy->isIntegerTy(64) ||
+      ArgNo >= CB.arg_size() || CB.isInlineAsm())
+    return false;
+
+  Type *ArgTy = CB.getArgOperand(ArgNo)->getType();
+
+  bool isFreeSigned =
+      ExtOpcode == Instruction::SExt && CB.paramHasAttr(ArgNo, Attribute::SExt);
+
+  bool isFreeUnsigned =
+      ExtOpcode == Instruction::ZExt && CB.paramHasAttr(ArgNo, Attribute::ZExt);
+
+  if (!isFreeSigned && !isFreeUnsigned)
+    return false;
+
+  if (!ArgTy->isIntegerTy() ||
+      ArgTy->getIntegerBitWidth() >= WideTy->getIntegerBitWidth())
+    return false;
+
+  switch (CB.getCallingConv()) {
+  case CallingConv::C:
+  case CallingConv::Fast:
+    return true;
+  default:
+    return false;
+  }
+  return false;
+}
+
+bool RISCVTargetLowering::isArgumentExtensionFree(const Argument &Arg,
+                                                  Type *DstTy,
+                                                  unsigned Opcode) const {
+  // Sext arguments on RV64 from i32 to i64 are already sign extended.
+  // Extending them requires no additional instruction.
+  if (!Subtarget.is64Bit() || Opcode != Instruction::SExt ||
+      !Arg.getType()->isIntegerTy(32) || !DstTy->isIntegerTy(64) ||
+      !Arg.hasSExtAttr())
+    return false;
+
+  switch (Arg.getParent()->getCallingConv()) {
+  case CallingConv::C:
+  case CallingConv::Fast:
+    return true;
+  default:
+    return false;
+  }
+  return false;
+}
+
+bool RISCVTargetLowering::isSExtFree(Type *FromTy, Type *ToTy) const {
+  // RV64I implicitly sign-extends 32-bit results in 64-bit registers.
+  return FromTy->isIntegerTy(32) && ToTy->isIntegerTy(64) &&
+         Subtarget.is64Bit();
 }
 
 bool RISCVTargetLowering::isSExtCheaperThanZExt(EVT SrcVT, EVT DstVT) const {

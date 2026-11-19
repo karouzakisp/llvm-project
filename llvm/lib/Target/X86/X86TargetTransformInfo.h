@@ -205,6 +205,20 @@ public:
                                        int64_t Scale,
                                        unsigned AddrSpace) const override;
 
+  InstructionCost
+  getWIAPromotionCost(const TTI::WIAPromotionInfo &Info,
+                      TTI::TargetCostKind CostKind) const override;
+
+  InstructionCost
+  getWIAPromotionBenefit(const TTI::WIAPromotionInfo &Info,
+                         TTI::TargetCostKind CostKind) const override;
+
+  int getWIAPromotionProfitBonus(const TTI::WIAPromotionInfo &Info,
+                                 TTI::TargetCostKind CostKind) const override;
+
+  int getWIAPromotionGreedyCost(const TTI::WIAPromotionInfo &Info,
+                                TTI::TargetCostKind) const override;
+
   bool isLSRCostLess(const TargetTransformInfo::LSRCost &C1,
                      const TargetTransformInfo::LSRCost &C2) const override;
   bool canMacroFuseCmp() const override;
