@@ -21,6 +21,8 @@ namespace {
 using WIA = WideningIntegerArithmetic;
 using Solution = WideningIntegerSolutionInfo;
 
+bool noKnownSignExtension(Value *, unsigned) { return false; }
+
 class WIAAnalysisTest : public testing::Test {
 protected:
   LLVMContext Context;
@@ -60,6 +62,23 @@ protected:
         WIAK_UNKNOWN, V);
   }
 
+  void withPlanner(Function &F, function_ref<void(ExtRewritePlanner &)> Check) {
+    AssumptionCache Assumptions(F);
+    DominatorTree Dominators(F);
+    LoopInfo Loops(Dominators);
+
+    DemandedBits Demanded(F, Assumptions, Dominators);
+
+    auto IsNonNegative = [&](Value *V) { return Analysis.isKnownNonNeg(V); };
+
+    WIAInfo Info{};
+    Info.IsKnownNonNeg = IsNonNegative;
+
+    ExtRewritePlanner Planner(Demanded, nullptr, nullptr, &Layout, &Loops, Info,
+                              Context, false, nullptr);
+
+    Check(Planner);
+  }
 };
 
 TEST_F(WIAAnalysisTest, AddNonRedundantPruneBadSols) {
@@ -446,6 +465,429 @@ TEST_F(WIAAnalysisTest, PromotionNeedsMatchingWidthAndFill) {
 
   S->setFillType(UNDEFINED);
   EXPECT_FALSE(Analysis.hasPromotionSolution(X, 64, ANYTHING));
+}
+
+TEST_F(WIAAnalysisTest, TruncBoundaries) {
+  auto *F = body(Builder.getInt8Ty(), {Builder.getInt8Ty()});
+  auto *X = F->getArg(0);
+
+  auto *Ext = cast<CastInst>(Builder.CreateSExt(X, Builder.getInt64Ty()));
+  auto *Trunc = cast<TruncInst>(Builder.CreateTrunc(Ext, Builder.getInt8Ty()));
+  Builder.CreateRet(Trunc);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    ExtRewriteGraph G;
+    G.Ext = Ext;
+    G.Source = Ext->getOperand(0);
+    G.NarrowWidth = 8;
+    G.WideWidth = 64;
+
+    bool Accept =
+        Planner.handleTruncBoundary(Trunc->getOperandUse(0), Trunc, G);
+    EXPECT_TRUE(Accept);
+
+    ASSERT_EQ(G.BoundaryRewrites.size(), 1u);
+
+    EXPECT_EQ(G.BoundaryRewrites.front().Kind,
+              BoundaryRewriteKind::ReplaceWithSource);
+  });
+}
+
+TEST_F(WIAAnalysisTest, NarrowShiftNodes) {
+  auto *F = body(Builder.getInt8Ty(), {Builder.getInt8Ty()});
+  auto *X = F->getArg(0);
+
+  auto *Ext = cast<CastInst>(Builder.CreateZExt(X, Builder.getInt64Ty()));
+  auto *GoodShift =
+      cast<Instruction>(Builder.CreateShl(Ext, Builder.getInt64(3)));
+
+  auto *BadShift =
+      cast<Instruction>(Builder.CreateShl(Ext, Builder.getInt64(8)));
+  auto *Trunc = Builder.CreateTrunc(GoodShift, Builder.getInt8Ty());
+  Builder.CreateRet(Trunc);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    ExtRewriteGraph G;
+    G.Ext = Ext;
+    G.Source = Ext->getOperand(0);
+    G.NarrowWidth = 8;
+    G.WideWidth = 64;
+
+    SmallVector<Value *, 8> Worklist;
+
+    // A shift by 3 is valid at the proposed i8 width.
+    EXPECT_TRUE(Planner.tryToAddNarrowGraphNode(GoodShift, G, Worklist));
+
+    // The accepted instruction should enter the graph and worklist.
+    EXPECT_TRUE(G.Nodes.contains(GoodShift));
+
+    EXPECT_FALSE(Planner.tryToAddNarrowGraphNode(BadShift, G, Worklist));
+    EXPECT_FALSE(G.Nodes.contains(BadShift));
+
+    ASSERT_EQ(Worklist.size(), 1u);
+    EXPECT_EQ(Worklist.back(), GoodShift);
+
+    EXPECT_FALSE(G.Visiting.contains(GoodShift));
+  });
+}
+
+TEST_F(WIAAnalysisTest, TruncRootCollectsAddAndExit) {
+  // trunc i64 -> i8 -> add -> sext back to i64
+  auto *F = body(Builder.getInt64Ty(), {Builder.getInt64Ty()});
+  auto *Trunc =
+      cast<TruncInst>(Builder.CreateTrunc(F->getArg(0), Builder.getInt8Ty()));
+  auto *Add = cast<Instruction>(Builder.CreateAdd(Trunc, Builder.getInt8(1)));
+  auto *Exit = cast<CastInst>(Builder.CreateSExt(Add, Builder.getInt64Ty()));
+  Builder.CreateRet(Exit);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    TruncRootGraph G;
+    G.Root = Trunc;
+    G.NarrowWidth = 8;
+    G.WideWidth = 64;
+
+    ASSERT_TRUE(Planner.tryToBuildTruncGraphFromUsers(Trunc, G));
+
+    // The add belongs to the computation that will be widened.
+    EXPECT_TRUE(G.Nodes.contains(Add));
+
+    // The extension marks where the narrow computation ends.
+    ASSERT_EQ(G.Exits.size(), 1u);
+    EXPECT_EQ(G.Exits.front(), Exit);
+
+    // Remove the casts; retain the add for widening.
+    EXPECT_TRUE(llvm::is_contained(G.InstsToRemove, Trunc));
+    EXPECT_TRUE(llvm::is_contained(G.InstsToRemove, Exit));
+    EXPECT_FALSE(llvm::is_contained(G.InstsToRemove, Add));
+  });
+}
+
+TEST_F(WIAAnalysisTest, SignedClampPlan) {
+  auto *F = body(Builder.getInt8Ty(), {Builder.getInt8Ty()});
+
+  auto *Wide = Builder.CreateSExt(F->getArg(0), Builder.getInt64Ty());
+  auto *Shift = Builder.CreateLShr(Wide, Builder.getInt64(4));
+  auto *Trunc =
+      cast<TruncInst>(Builder.CreateTrunc(Shift, Builder.getInt8Ty()));
+
+  auto *Add = Builder.CreateAdd(Trunc, Builder.getInt8(1));
+  auto *Low =
+      Builder.CreateBinaryIntrinsic(Intrinsic::smax, Add, Builder.getInt8(0));
+  auto *High =
+      Builder.CreateBinaryIntrinsic(Intrinsic::umin, Low, Builder.getInt8(100));
+  Builder.CreateRet(High);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    TruncRootGraph G;
+    G.Root = Trunc;
+    G.NarrowWidth = 8;
+    G.WideWidth = 64;
+
+    auto Plan = Planner.tryToBuildSignedClampPlan(Trunc);
+    ASSERT_TRUE(Plan.has_value());
+
+    EXPECT_EQ(Plan->Kind, ExtStrategy::PromoteSource);
+
+    EXPECT_EQ(Plan->NarrowWidth, 8u);
+    EXPECT_EQ(Plan->WideWidth, 64u);
+
+    EXPECT_EQ(Plan->TruncToReplaceWithAShr, Trunc);
+
+    EXPECT_TRUE(llvm::is_contained(Plan->InstsToRemove, Trunc));
+    EXPECT_TRUE(llvm::is_contained(Plan->InstsToRemove, Shift));
+  });
+}
+
+TEST_F(WIAAnalysisTest, SignedClampPlanFailTest) {
+  auto *F = body(Builder.getInt8Ty(), {Builder.getInt8Ty()});
+
+  auto *Wide = Builder.CreateSExt(F->getArg(0), Builder.getInt64Ty());
+  auto *Shift = Builder.CreateLShr(Wide, Builder.getInt64(4));
+  auto *Trunc =
+      cast<TruncInst>(Builder.CreateTrunc(Shift, Builder.getInt8Ty()));
+
+  auto *Add = Builder.CreateAdd(Trunc, Builder.getInt8(127));
+  auto *Low =
+      Builder.CreateBinaryIntrinsic(Intrinsic::smax, Add, Builder.getInt8(0));
+  auto *High =
+      Builder.CreateBinaryIntrinsic(Intrinsic::umin, Low, Builder.getInt8(100));
+  Builder.CreateRet(High);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    TruncRootGraph G;
+    G.Root = Trunc;
+    G.NarrowWidth = 8;
+    G.WideWidth = 64;
+
+    auto Plan = Planner.tryToBuildSignedClampPlan(Trunc);
+    EXPECT_EQ(Plan, std::nullopt);
+  });
+}
+
+TEST_F(WIAAnalysisTest, SourcePromoteNodeTest) {
+  auto *F =
+      body(Builder.getInt64Ty(), {Builder.getInt8Ty(), Builder.getInt8Ty()});
+  auto *Add =
+      cast<Instruction>(Builder.CreateNSWAdd(F->getArg(0), F->getArg(1)));
+  auto *Ext = cast<CastInst>(Builder.CreateSExt(Add, Builder.getInt64Ty()));
+  Builder.CreateRet(Ext);
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    SourcePromoteGraph G;
+    G.Ext = Ext;
+    G.Source = Add;
+    G.SrcWidth = 8;
+    G.DstWidth = 64;
+    G.Fill = SIGN;
+
+    ASSERT_TRUE(Planner.tryToAddSourcePromoteNode(Add, G, SIGN));
+    ASSERT_TRUE(G.containsNode(Add));
+  });
+
+  auto *ExtF = body(Builder.getVoidTy(), {Builder.getInt8Ty()});
+  auto *X = ExtF->getArg(0);
+
+  auto *S32 = cast<Instruction>(Builder.CreateSExt(X, Builder.getInt32Ty()));
+  auto *Z32 = cast<Instruction>(Builder.CreateZExt(X, Builder.getInt32Ty()));
+  auto *S64 = cast<Instruction>(Builder.CreateSExt(X, Builder.getInt64Ty()));
+  Builder.CreateRetVoid();
+
+  withPlanner(*ExtF, [&](ExtRewritePlanner &Planner) {
+    SourcePromoteGraph G;
+    G.DstWidth = 64;
+
+    // 1st case
+    ASSERT_TRUE(Planner.tryToAddSourcePromoteNode(S32, G, SIGN));
+    EXPECT_TRUE(G.containsNode(S32));
+    EXPECT_TRUE(G.InstsToReplaceWithOperand.contains(S32));
+    EXPECT_EQ(G.ExternalOpsToExtend.at(X), SIGN);
+
+    G = SourcePromoteGraph{};
+    G.DstWidth = 64;
+
+    // 2nd case
+    ASSERT_TRUE(Planner.tryToAddSourcePromoteNode(Z32, G, ZEROS));
+    EXPECT_TRUE(G.containsNode(Z32));
+    EXPECT_TRUE(G.InstsToReplaceWithOperand.contains(Z32));
+    EXPECT_EQ(G.ExternalOpsToExtend.at(X), ZEROS);
+
+    G = SourcePromoteGraph{};
+    G.DstWidth = 64;
+
+    // 3rd case, S64 has already the target width
+    // so it becomes a wide leaf.
+    ASSERT_TRUE(Planner.tryToAddSourcePromoteNode(S64, G, SIGN));
+    EXPECT_TRUE(G.WideLeaves.contains(S64));
+    EXPECT_FALSE(G.InstsToReplaceWithOperand.contains(S64));
+    EXPECT_FALSE(G.containsNode(S64));
+    EXPECT_TRUE(G.ExternalOpsToExtend.empty());
+  });
+}
+
+TEST_F(WIAAnalysisTest, MergeFillsTest) {
+  auto *F = body(Builder.getVoidTy(), {Builder.getInt16Ty()});
+  auto *Unknown = F->getArg(0);
+  auto *NonNegative =
+      cast<Instruction>(Builder.CreateAnd(Unknown, Builder.getInt16(127)));
+  Builder.CreateRetVoid();
+
+  withPlanner(*F, [&](ExtRewritePlanner &Planner) {
+    SourcePromoteGraph G;
+
+    // First requirement for this value: record SIGN.
+    EXPECT_EQ(Planner.mergeFill(G, NonNegative, SIGN),
+              MergeFillResult::Changed);
+    EXPECT_EQ(G.getRequiredFill(NonNegative), SIGN);
+
+    // require ZEROS now
+    EXPECT_EQ(Planner.mergeFill(G, NonNegative, ZEROS),
+              MergeFillResult::Unchanged);
+    // Since the result is NonNegative it can stay SIGN.
+    EXPECT_EQ(G.getRequiredFill(NonNegative), SIGN);
+
+    EXPECT_EQ(Planner.mergeFill(G, Unknown, SIGN), MergeFillResult::Changed);
+    EXPECT_EQ(Planner.mergeFill(G, Unknown, ZEROS), MergeFillResult::Conflict);
+    EXPECT_EQ(G.getRequiredFill(Unknown), SIGN);
+  });
+}
+
+TEST_F(WIAAnalysisTest, SignedWrapConstants) {
+  auto *F = body(Builder.getInt1Ty(), {Builder.getInt8Ty()});
+
+  auto *Add =
+      cast<Instruction>(Builder.CreateAdd(F->getArg(0), Builder.getInt8(1)));
+  auto *Cmp = cast<ICmpInst>(Builder.CreateICmpSLT(Add, Builder.getInt8(0)));
+  Builder.CreateRet(Cmp);
+
+  APInt NewOpConstant;
+  APInt NewCmpConstant;
+
+  ASSERT_TRUE(computeSignedICmpWrapConstants(Add, Cmp, 8, 64, NewOpConstant,
+                                             NewCmpConstant));
+
+  ASSERT_EQ(NewOpConstant.getBitWidth(), 64u);
+  ASSERT_EQ(NewCmpConstant.getBitWidth(), 64u);
+
+  EXPECT_EQ(NewOpConstant.getSExtValue(), -127ll);
+  EXPECT_EQ(NewCmpConstant.getSExtValue(), -128ll);
+}
+
+TEST_F(WIAAnalysisTest, GepSignFillTest) {
+  auto *F = body(Builder.getVoidTy(), {Builder.getInt8Ty()});
+
+  // A local 100-byte object.
+  auto *ArrayTy = ArrayType::get(Builder.getInt8Ty(), 100);
+  auto *Table = new GlobalVariable(
+      TestModule, ArrayTy, true, GlobalValue::InternalLinkage,
+      ConstantAggregateZero::get(ArrayTy), "table");
+
+  auto *Ext =
+      cast<ZExtInst>(Builder.CreateZExt(F->getArg(0), Builder.getInt64Ty()));
+
+  Builder.CreateInBoundsGEP(ArrayTy, Table, {Builder.getInt64(0), Ext});
+  Builder.CreateRetVoid();
+
+  EXPECT_TRUE(canUseSignFillForGEP(Ext, 8, Layout));
+}
+
+TEST_F(WIAAnalysisTest, GepSignFillNegativeTest) {
+  auto *F = body(Builder.getVoidTy(), {Builder.getInt8Ty()});
+
+  // A local 128-byte object.
+  auto *ArrayTy = ArrayType::get(Builder.getInt8Ty(), 128);
+  auto *Table = new GlobalVariable(
+      TestModule, ArrayTy, true, GlobalValue::InternalLinkage,
+      ConstantAggregateZero::get(ArrayTy), "table");
+
+  auto *Ext =
+      cast<ZExtInst>(Builder.CreateZExt(F->getArg(0), Builder.getInt64Ty()));
+
+  Builder.CreateInBoundsGEP(ArrayTy, Table, {Builder.getInt64(0), Ext});
+  Builder.CreateRetVoid();
+
+  // sign range is between 0 and 127, so sext produces negative.
+  EXPECT_FALSE(canUseSignFillForGEP(Ext, 8, Layout));
+}
+
+TEST_F(WIAAnalysisTest, TestUndoLogAndFills) {
+  auto *X = Builder.getInt8(1);
+  auto *Y = Builder.getInt8(2);
+
+  DenseMap<Value *, IntegerFillType> Fills;
+  Fills[X] = SIGN;
+
+  PromoteConstraintSolver::UndoLog<Value *> Log;
+  auto Checkpoint = Log.snapshot();
+
+  Log.set(Fills, X, ZEROS);
+
+  // Add new entry.
+  Log.set(Fills, Y, ANYTHING);
+
+  ASSERT_EQ(Fills.size(), 2u);
+  ASSERT_EQ(Fills.at(X), ZEROS);
+
+  Log.rollback(Checkpoint);
+
+  EXPECT_EQ(Fills.at(X), SIGN);
+
+  EXPECT_FALSE(Fills.contains(Y));
+}
+
+TEST_F(WIAAnalysisTest, PropagateForPendingChoice) {
+  auto *F =
+      body(Builder.getInt8Ty(), {Builder.getInt8Ty(), Builder.getInt8Ty()});
+  auto *And = cast<Instruction>(Builder.CreateAnd(F->getArg(0), F->getArg(1)));
+  Builder.CreateRet(And);
+
+  // Simulate multiple choices for operand fills.
+  auto ChooseFills = [](Instruction *, IntegerFillType,
+                        SmallVectorImpl<IntegerFillType> &Fills,
+                        SmallVectorImpl<FillTuple> *GeneratedTuples) {
+    Fills.assign(2, PENDING);
+    if (GeneratedTuples) {
+      GeneratedTuples->clear();
+      GeneratedTuples->emplace_back(ZEROS, ANYTHING, ZEROS);
+      GeneratedTuples->emplace_back(ANYTHING, ZEROS, ZEROS);
+    }
+    return true;
+  };
+
+  SourcePromoteGraph G;
+  G.DstWidth = 64;
+  G.addNode(And);
+
+  WIAInfo Info{};
+  Info.ChooseOpsFills = ChooseFills;
+  WIATuplesMap Tuples;
+  PromoteConstraintSolver Solver(G, Info, Layout, Context, noKnownSignExtension,
+                                 Tuples);
+
+  DenseMap<Value *, IntegerFillType> ReqFill;
+  DenseMap<const Use *, IntegerFillType> ReqOperandFill;
+  PromoteConstraintSolver::UndoLog<Value *> ValueLog;
+  PromoteConstraintSolver::UndoLog<const Use *> OperandLog;
+  SmallSetVector<Value *, 32> Worklist;
+
+  ReqFill[And] = ZEROS;
+  Worklist.insert(And);
+
+  auto Result = Solver.propagateUntil(ReqFill, ReqOperandFill, ValueLog,
+                                      OperandLog, Worklist);
+
+  EXPECT_EQ(Result.Status,
+            PromoteConstraintSolver::PropagationStatus::Continue);
+  EXPECT_EQ(Result.I, And);
+  EXPECT_EQ(Result.Fill, ZEROS);
+}
+
+TEST_F(WIAAnalysisTest, CollectFillReqsTest) {
+  auto *F = body(Builder.getInt8Ty(), {Builder.getInt8Ty()});
+  auto *X = F->getArg(0);
+  auto *Entry = Builder.GetInsertBlock();
+  auto *Merge = BasicBlock::Create(Context, "merge", F);
+  Builder.CreateBr(Merge);
+
+  Builder.SetInsertPoint(Merge);
+  auto *Phi = Builder.CreatePHI(Builder.getInt8Ty(), 1);
+  Phi->addIncoming(X, Entry);
+  Builder.CreateRet(Phi);
+
+  SourcePromoteGraph G;
+  G.Source = Phi;
+  G.SrcWidth = 8;
+  G.DstWidth = 64;
+  G.Fill = SIGN;
+  G.addNode(Phi);
+  G.ExternalOpsToExtend[X] = SIGN;
+
+  auto ChooseFills = [](Instruction *I, IntegerFillType Fill,
+                        SmallVectorImpl<IntegerFillType> &Fills,
+                        SmallVectorImpl<FillTuple> *GeneratedTuples) {
+    if (GeneratedTuples)
+      GeneratedTuples->clear();
+
+    Fills.assign(I->getNumOperands(), Fill);
+    return true;
+  };
+
+  WIAInfo Info{};
+  Info.ChooseOpsFills = ChooseFills;
+  WIATuplesMap Tuples;
+  PromoteConstraintSolver Solver(G, Info, Layout, Context, noKnownSignExtension,
+                                 Tuples);
+
+  bool Solved = Solver.solve();
+
+  ASSERT_TRUE(Solved);
+
+  const auto &Fills = Solver.getRequiredFill();
+  EXPECT_EQ(Fills.lookup_or(Phi, UNDEFINED), SIGN);
+
+  auto IsPending = [](const auto &Entry) { return Entry.second == PENDING; };
+  EXPECT_FALSE(llvm::any_of(Fills, IsPending));
+  EXPECT_FALSE(llvm::any_of(Solver.getRequiredOperandFill(), IsPending));
+  EXPECT_FALSE(llvm::any_of(Solver.getLoadsToExtend(), IsPending));
 }
 
 } // namespace
