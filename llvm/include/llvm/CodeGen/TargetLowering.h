@@ -3356,6 +3356,10 @@ public:
                        Load->getPointerAddressSpace(), LType, false);
   }
 
+  virtual bool isSExtFree(Type *FromTy, Type *ToTy) const{
+    return false;
+  }
+
   /// Return true if any actual instruction that defines a value of type FromTy
   /// implicitly zero-extends the value to ToTy in the result register.
   ///
