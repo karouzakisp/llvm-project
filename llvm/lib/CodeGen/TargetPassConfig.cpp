@@ -52,6 +52,7 @@
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/WIA.h"
 #include <cassert>
 #include <optional>
 #include <string>
@@ -746,6 +747,12 @@ void TargetPassConfig::addIRPasses() {
   // the unsupported intrinsic will be replaced with a chain of basic blocks,
   // that stores/loads element one-by-one if the appropriate mask bit is set.
   addPass(createScalarizeMaskedMemIntrinLegacyPass());
+
+  // Schedule WIA on RISC-V. The pass itself requires minsize (-Oz),
+  // since codegen opt levels do not encode size optimizations.
+  if (getOptLevel() != CodeGenOptLevel::None &&
+      TM->getTargetTriple().isRISCV() && !isWIADisabled())
+    addPass(createWideningIntegerArithmeticLegacyPass());
 
   // Expand reduction intrinsics into shuffle sequences if the target wants to.
   // Allow disabling it for testing purposes.

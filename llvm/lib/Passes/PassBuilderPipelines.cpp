@@ -155,6 +155,7 @@
 #include "llvm/Transforms/Utils/ProfileVerify.h"
 #include "llvm/Transforms/Utils/RelLookupTableConverter.h"
 #include "llvm/Transforms/Utils/SimplifyCFGOptions.h"
+#include "llvm/Transforms/Utils/WIA.h"
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
@@ -1126,6 +1127,15 @@ ModulePassManager PassBuilder::buildModuleSimplificationPipeline(
   FunctionPassManager GlobalCleanupPM;
   // FIXME: Should this instead by a run of SROA?
   GlobalCleanupPM.addPass(PromotePass());
+
+  // Widen before InstCombine narrows arithmetic and canonicalize clamps
+  // This saves extra bytes on embedded benchmarks.
+  // Choose Early stage here, otherwise we introduce regressions
+  // by making the LoopStrength reduce pass to create more PHI instructions.
+  if (TM && TM->getTargetTriple().getArch() == Triple::riscv64 &&
+      !isWIADisabled())
+    GlobalCleanupPM.addPass(WIAPass(TM, /*OnlyMinSize*/ true));
+
   GlobalCleanupPM.addPass(InstCombinePass());
   invokePeepholeEPCallbacks(GlobalCleanupPM, Level);
   GlobalCleanupPM.addPass(

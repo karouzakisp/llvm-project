@@ -1,4 +1,5 @@
 ; RUN: opt -mtriple=riscv64 -passes=wia,verify -S < %s | FileCheck %s
+; RUN: opt -mtriple=riscv64 -passes='default<O2>' -verify-each -disable-output < %s
 
 ; Multiple extension users make PHI promotion profitable. Incoming extensions
 ; must nevertheless have a legal insertion point and an available operand.
