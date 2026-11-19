@@ -573,6 +573,10 @@ LLVM_ABI FunctionPass *createPseudoProbeInserterLegacyPass();
 /// Create IR Type Promotion pass. \see TypePromotion.cpp
 LLVM_ABI FunctionPass *createTypePromotionLegacyPass();
 
+/// Create IR Type Widening Integer Arithmetic Pass \see
+/// WideningIntegerArithmetic.cpp
+LLVM_ABI FunctionPass *createWideningIntegerArithmeticLegacyPass();
+
 /// Add Flow Sensitive Discriminators. PassNum specifies the
 /// sequence number of this pass (starting from 1).
 LLVM_ABI FunctionPass *

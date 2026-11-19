@@ -163,6 +163,7 @@
 #include "llvm/TargetParser/ARMTargetParser.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/WIA.h"
 
 #include <algorithm>
 #include <climits>
@@ -257,6 +258,13 @@ class WideningIntegerArithmetic {
   OptimizationRemarkEmitter *ORE = nullptr;
 
 public:
+  bool run(Function &F, const TargetMachine *TM, const TargetLowering *TLI,
+           const TargetTransformInfo *TTI, const DataLayout *DL,
+           DemandedBits *DB, LoopInfo *LI, DominatorTree *DT,
+           AssumptionCache *AC, OptimizationRemarkEmitter *ORE,
+           ArrayRef<Instruction *> RewriteCandidates);
+
+public:
   using FillTypeSet = ArrayRef<FillTuple>;
   static FillTypeSet getFillRules(unsigned Opcode);
 
@@ -316,7 +324,7 @@ private:
 
   // Use a forward analysis using the WIA paper to get all the FillTypes of
   // all the relevant instructions for the function F.
-  [[maybe_unused]] bool visitWidening(Function &F);
+  bool visitWidening(Function &F);
 
   // Number operands of Instruction I, so we can use BitVectors to query
   // all the relevant instructions, this can help with compile time.
@@ -339,7 +347,7 @@ private:
 
   // What extension the target prefers? RISC-V prefers sext over zext.
   // Most of the other targets prefer zext over sext.
-  [[maybe_unused]] void setFillType(Type *IType);
+  void setFillType(Type *IType);
 
   // Check if we have at least one solution for the Value V.
   bool isPartiallySolved(Value *V);
@@ -443,7 +451,7 @@ private:
   bool canDropTruncZext(Instruction *Instr, Value *N0, unsigned short NewWidth);
 
   // Clear all relevant tables.
-  [[maybe_unused]] void clearTables();
+  void clearTables();
 
   // Push all users of V into the worklist and mark them as unsolved.
   void pushUsersToWorklist(Value *V, SmallVectorImpl<Value *> &Worklist);
@@ -580,18 +588,18 @@ private:
 
   // Sometimes we can avoid the whole wia analysis,
   // try to prove that V can have an appropriate solution (width, fill)
-  [[maybe_unused]] std::optional<bool> tryToGetLocalPromotionSolution(
+  std::optional<bool> tryToGetLocalPromotionSolution(
       Value *V, unsigned Width, IntegerFillType Fill,
       llvm::function_ref<RegionResult(Instruction *)> ClassifyRegion);
 
   // Check if we have a solution for V at a specific Width and Fill
-  [[maybe_unused]] bool hasPromotionSolution(Value *V, unsigned Width, IntegerFillType Fill);
+  bool hasPromotionSolution(Value *V, unsigned Width, IntegerFillType Fill);
 
   // For a given Instruction I with a specific result with a FillType
   // named ResultFill, produce a fill requirement for each operand
   // if we have more than one choice defer the choice for later,
   // at the PromoteConstraintSolver.
-  [[maybe_unused]] bool chooseFillTuple(Instruction *I, IntegerFillType ResultFill,
+  bool chooseFillTuple(Instruction *I, IntegerFillType ResultFill,
                        SmallVectorImpl<IntegerFillType> &,
                        SmallVectorImpl<FillTuple> *GeneratedTuples = nullptr);
 
@@ -611,7 +619,7 @@ private:
   bool isKnownNonNeg(Value *V);
 
   // Get the extension cost from SrcTy to DstTy.
-  [[maybe_unused]] InstructionCost getExtTTICost(Type *SrcTy, Type *DstTy, IntegerFillType Fill);
+  InstructionCost getExtTTICost(Type *SrcTy, Type *DstTy, IntegerFillType Fill);
 };
 
 } // end anonymous namespace
@@ -640,7 +648,7 @@ static bool isSupportedScalarIntType(Type *Ty) {
 }
 
 // From those places we can possibly remove a cast.
-[[maybe_unused]] static bool isWIARoot(const Instruction &I) {
+static bool isWIARoot(const Instruction &I) {
   if (isa<SExtInst, ZExtInst, TruncInst>(I) &&
       (!isSupportedScalarIntType(I.getType()) ||
        !isSupportedScalarIntType(I.getOperand(0)->getType())))
@@ -4960,6 +4968,65 @@ bool ExtRewritePlanner::tryToBuildNarrowGraphFromUsers(CastInst *Ext,
   return true;
 }
 
+bool ExtRewritePlanner::isTruncRootProfitable(const TruncRootGraph &G) {
+  if (!TTI)
+    return false;
+
+  auto OptForSize = OptimizeForSize ? TTI::TCK_CodeSize : TTICostKind;
+  Type *WideTy = IntegerType::getIntNTy(Ctx, G.WideWidth);
+  InstructionCost OldC = 0, NewC = 0;
+
+  for (Instruction *I : G.InstsToRemove)
+    OldC += TTI->getInstructionCost(I, OptForSize);
+
+  for (Instruction *I : G.Nodes) {
+    OldC += TTI->getInstructionCost(I, OptForSize);
+    NewC +=
+        isa<SelectInst>(I)
+            ? TTI->getCmpSelInstrCost(Instruction::Select, WideTy,
+                                      I->getOperand(0)->getType(),
+                                      CmpInst::BAD_ICMP_PREDICATE, OptForSize)
+            : TTI->getArithmeticInstrCost(I->getOpcode(), WideTy, OptForSize);
+  }
+
+  for (CastInst *Exit : G.Exits) {
+    Type *Ty = Exit->getDestTy();
+    if (Ty != WideTy)
+      NewC += TTI->getCastInstrCost(Instruction::Trunc, Ty, WideTy,
+                                    TTI::CastContextHint::None, OptForSize);
+    if (isa<ZExtInst>(Exit)) {
+      APInt Mask =
+          APInt::getLowBitsSet(Ty->getIntegerBitWidth(), G.NarrowWidth);
+      NewC += TTI->getArithmeticInstrCost(Instruction::And, Ty, OptForSize);
+      NewC += TTI->getIntImmCostInst(Instruction::And, 1, Mask, Ty,
+                                     TTI::TCK_CodeSize);
+    } else {
+      NewC += TTI->getArithmeticInstrCost(Instruction::Shl, Ty, OptForSize);
+      NewC += TTI->getArithmeticInstrCost(Instruction::AShr, Ty, OptForSize);
+    }
+  }
+  return OldC.isValid() && NewC.isValid() && NewC < OldC;
+}
+
+std::optional<ExtRewritePlan>
+ExtRewritePlanner::analyzeTrunc(TruncInst *Trunc) {
+  if (auto Plan = tryToBuildSignedClampPlan(Trunc))
+    return Plan;
+
+  TruncRootGraph G;
+  G.Root = Trunc;
+  G.NarrowWidth = Trunc->getDestTy()->getScalarSizeInBits();
+  G.WideWidth = Trunc->getSrcTy()->getScalarSizeInBits();
+
+  if (!tryToBuildTruncGraphFromUsers(Trunc, G))
+    return std::nullopt;
+
+  if (!isTruncRootProfitable(G))
+    return std::nullopt;
+
+  return makeTruncRootPlan(std::move(G));
+}
+
 bool ExtRewritePlanner::hasExistingLoadExt(LoadInst *LI, unsigned DstWidth,
                                            IntegerFillType Fill,
                                            CastInst *CurrentExt) {
@@ -6544,6 +6611,107 @@ bool ExtRewritePlanner::isICmpCandidate(ICmpInst *ICmp, Instruction *Source) {
   return SrcWidth > 1 && SrcWidth < 32;
 }
 
+bool ExtRewritePlanner::buildICmpRootGraph(ICmpInst *ICmp, Instruction *Source,
+                                           SourcePromoteGraph &G,
+                                           IntegerFillType DefaultFill,
+                                           unsigned PromotedWidth) {
+  if (!ICmp->isSigned() && !ICmp->isEquality() && !ICmp->isUnsigned())
+    return false;
+
+  auto *NarrowTy = ICmp->getOperand(0)->getType();
+  if (!isSupportedScalarIntType(NarrowTy))
+    return false;
+
+  auto NarrowWidth = NarrowTy->getScalarSizeInBits();
+  if (NarrowWidth <= 1 || NarrowWidth > 32)
+    return false;
+
+  if (!Source)
+    return false;
+
+  unsigned RegisterBitWidth =
+      TTI->getRegisterBitWidth(TargetTransformInfo::RGK_Scalar).getFixedValue();
+
+  if (PromotedWidth <= NarrowWidth || PromotedWidth > RegisterBitWidth ||
+      !isSupportedScalarIntType(Type::getIntNTy(Ctx, PromotedWidth)))
+    return false;
+
+  // Safe wrap only works for signed icmps.
+  bool IsSafeWrap = ICmp->isSigned() &&
+                    isSafeICmpWrap(Source, ICmp, NarrowWidth, PromotedWidth);
+
+  G.Ext = nullptr;
+  G.Source = Source;
+  G.SrcWidth = NarrowWidth;
+  G.DstWidth = PromotedWidth;
+  // if SafeWrap is true
+  // chooseSafeWrapOpFills will force SIGN here, we can use ANYTHING
+  // Otherwise, the other classes must prove legality.
+  G.Fill = IsSafeWrap ? ANYTHING : DefaultFill;
+  G.IsICmpRoot = true;
+
+  if (IsSafeWrap)
+    G.SafeWrap.insert(Source);
+
+  unsigned MaxUsers = 4;
+  bool BoolSelect = false;
+
+  // Some boolean selects lower to logical operations involing freeze.
+  // Narrow comparison operands introduce masks that survide DAG combining.
+  // Try to widen these selects to avoid the masks.
+  for (auto *U : ICmp->users()) {
+    if (MaxUsers-- == 0)
+      break;
+    if (isa<SelectInst>(U) && U->getType()->isIntegerTy(1)) {
+      BoolSelect = true;
+      break;
+    }
+  }
+
+  if (auto *Load = dyn_cast<LoadInst>(Source); Load && !BoolSelect) {
+    TTI::WIAPromotionInfo Info;
+    Info.SrcWidth = NarrowWidth;
+    Info.DstWidth = PromotedWidth;
+    Info.NumOfSignExtLoads = DefaultFill == SIGN;
+    Info.NumOfZExtLoads = DefaultFill == ZEROS;
+
+    unsigned ExtOpcode =
+        DefaultFill == SIGN ? Instruction::SExt : Instruction::ZExt;
+    Info.ExtendedLoads.push_back({Load, ExtOpcode, 0, 0});
+
+    // Reject early if it's not profitable.
+    if (TTI->getWIAPromotionProfitBonus(Info, TTI::TCK_CodeSize) <= 0)
+      return false;
+  }
+
+  bool BuildSourceG = tryToBuildSourcePromoteGraphFromValue(Source, G);
+  if (!BuildSourceG)
+    return false;
+
+  if (!BoolSelect || G.containsNode(ICmp))
+    return true;
+
+  // If we have found a load onto an ICmp, the ICmp isn't include
+  // in the Graph, try to include it here.
+  return tryToAddSourcePromoteNode(ICmp, G, ANYTHING);
+}
+
+static StringRef getWIAFillName(IntegerFillType Fill) {
+  switch (Fill) {
+  case SIGN:
+    return "SIGN";
+  case ZEROS:
+    return "ZEROS";
+  case ANYTHING:
+    return "ANYTHING";
+  case PENDING:
+    return "PENDING";
+  case UNDEFINED:
+    return "UNDEFINED";
+  }
+  llvm_unreachable("Unknown WIA fill");
+}
+
 uint8_t
 ExtRewritePlanner::getICmpSourceFacts(Instruction *I, unsigned &Budget,
                                       SmallPtrSetImpl<Instruction *> &Active) {
@@ -6624,6 +6792,90 @@ ExtRewritePlanner::buildSmallICmpPlan(ICmpInst *ICmp, Instruction *Source,
     Plan.RequiredFill[Source] = ANYTHING;
     return Plan;
   }
+  return std::nullopt;
+}
+
+std::optional<ExtRewritePlan>
+ExtRewritePlanner::analyzeICmpRoot(ICmpInst *ICmp) {
+
+  auto tryToBuildICmpRootGraph =
+      [&](ICmpInst *ICmp, Instruction *Source, IntegerFillType Fill,
+          unsigned OpIdx) -> std::optional<ExtRewritePlan> {
+    if (!Source || Source->hasNUsesOrMore(MaxGraphUses))
+      return std::nullopt;
+
+    // Skip CondBrUser if this is the only user.
+    if (isa<LoadInst>(Source) && Source->getType()->isIntegerTy(32) &&
+        ICmp->hasOneUse() && isa<CondBrInst>(*ICmp->use_begin()))
+      return std::nullopt;
+
+    unsigned Opc = Source->getOpcode();
+    // InstCombine already handles adds with the nsw flag.
+    if (Opc == Instruction::Add && Source->hasNoSignedWrap() &&
+        ICmp->isSigned() && isa<ConstantInt>(Source->getOperand(1)) &&
+        isa<ConstantInt>(ICmp->getOperand(1 - OpIdx)))
+      return std::nullopt;
+
+    if (!isICmpCandidate(ICmp, Source))
+      return std::nullopt;
+
+    unsigned RegisterBitWidth =
+        TTI->getRegisterBitWidth(TargetTransformInfo::RGK_Scalar)
+            .getFixedValue();
+    unsigned PromotedWidth = chooseBestWidth(Source, RegisterBitWidth);
+    // Avoid widening loop counters when the sext is free for
+    // the signed comparison.
+    if (ICmp->isSigned() && TLI &&
+        TLI->isSExtFree(Source->getType(),
+                        Type::getIntNTy(Ctx, PromotedWidth)) &&
+        isPureLoopCounter(ICmp, Source))
+      return std::nullopt;
+
+    if (auto Plan = buildSmallICmpPlan(ICmp, Source, PromotedWidth)) {
+      return Plan;
+    }
+
+    SourcePromoteGraph PromG;
+    if (!buildICmpRootGraph(ICmp, Source, PromG, Fill, PromotedWidth)) {
+      if (ORE && Source) {
+        ORE->emit([&]() {
+          const auto &Reject = PromG.Reject;
+          OptimizationRemarkAnalysis R(DEBUG_TYPE, "ICmpRootGraphRejected",
+                                       ICmp);
+
+          R << "comparison-root candidate with source "
+            << ore::NV("Source", Source) << " and attempted fill "
+            << ore::NV("AttemptedFill", getWIAFillName(Fill))
+            << " rejected: " << ore::NV("Reason", Reject.Reason);
+
+          if (Reject.V)
+            R << "; value: " << ore::NV("Value", Reject.V);
+          if (Reject.User)
+            R << "; user: " << ore::NV("User", Reject.User);
+
+          return R;
+        });
+      }
+      return std::nullopt;
+    }
+
+    if (auto Plan = buildSequencePlan(PromG, ICmp)) {
+      Plan->Kind = ExtStrategy::PromoteICmpRoot;
+      Plan->Ext = ICmp;
+      return Plan;
+    }
+    return std::nullopt;
+  };
+
+  Instruction *Source = dyn_cast<Instruction>(ICmp->getOperand(0));
+
+  if (auto Plan = tryToBuildICmpRootGraph(ICmp, Source, SIGN, 0))
+    return Plan;
+
+  Instruction *Op1Src = dyn_cast<Instruction>(ICmp->getOperand(1));
+  if (auto Plan = tryToBuildICmpRootGraph(ICmp, Op1Src, SIGN, 1))
+    return Plan;
+
   return std::nullopt;
 }
 
@@ -7538,3 +7790,3054 @@ ExtRewritePlanner::makeSourcePromotePlan(SourcePromoteGraph &G,
 
   return Plan;
 }
+
+static bool isAllOnesConstant(Value *V) {
+  auto *C = dyn_cast<ConstantInt>(V);
+  return C && C->getValue().isAllOnes();
+}
+
+static bool isBitwiseNot(Instruction *I) {
+  return I->getOpcode() == Instruction::Xor &&
+         (isAllOnesConstant(I->getOperand(0)) ||
+          isAllOnesConstant(I->getOperand(1)));
+}
+
+static bool isBooleanLike(Instruction *I) {
+  if (!I->getType()->isIntegerTy(1))
+    return false;
+
+  switch (I->getOpcode()) {
+  case Instruction::Select:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+    return true;
+  default:
+    return false;
+  }
+}
+
+// Identify byte compare.
+static bool isNarrowByteCompare(Instruction *I) {
+  auto *Cmp = dyn_cast<ICmpInst>(I);
+  if (!Cmp)
+    return false;
+
+  Type *OpTy = Cmp->getOperand(0)->getType();
+  if (!OpTy->isIntegerTy())
+    return false;
+
+  return OpTy->getScalarSizeInBits() <= 8;
+}
+
+// Check if the reconstructed RewriteValue has really a SIGN fill
+// relative to that narrowWidth.
+static bool
+hasFreeSignedRepair(const BoundaryRewrite &Rewrite, unsigned NarrowWidth,
+                    const DenseMap<Value *, IntegerFillType> &Fills) {
+  auto It = Fills.find(Rewrite.OriginalValue);
+  return Rewrite.Kind == RepairNarrowValue && Rewrite.ResultTy &&
+         Rewrite.ResultTy->isIntegerTy(NarrowWidth) && It != Fills.end() &&
+         It->second == SIGN;
+}
+
+// Check if the reconstructed RewriteValue has really a ZERO fill
+// relative to that narrowWidth
+static bool
+hasFreeUnsignedRepair(const BoundaryRewrite &Rewrite, unsigned NarrowWidth,
+                      const DenseMap<Value *, IntegerFillType> &Fills) {
+  auto It = Fills.find(Rewrite.OriginalValue);
+  return Rewrite.Kind == RepairNarrowValue && Rewrite.ResultTy &&
+         Rewrite.ResultTy->isIntegerTy(NarrowWidth) && It != Fills.end() &&
+         It->second == ZEROS;
+}
+
+// For the Cost model
+struct WideProfit {
+  TTI::WIAPromotionInfo Info;
+
+  InstructionCost GreedyProfit = 0;
+  InstructionCost GreedyCost = 0;
+
+  InstructionCost TTIOldCost = 0;
+  InstructionCost TTINewCost = 0;
+};
+
+// Helper struct to make a decision whether to promote or not.
+struct SourcePromoteProfitDecision {
+  bool Profitable = false;
+  WideProfit Profit;
+  InstructionCost GreedyDiff = 0;
+  int Required = 0;
+  // The old TTI cost before any rewrite
+  InstructionCost TTIOld = 0;
+  // The new TTI cost after all the rewrites.
+  InstructionCost TTINew = 0;
+  // The difference between the TTIOld and TTINew
+  InstructionCost TTIDiff = 0;
+
+  // Record reason for not accepting to continue.
+  StringRef Reason = "Unknown";
+
+  bool HasPhiGraph = false;
+  bool LoadLeafPhi = false;
+};
+
+// Useful for the cost model, capture new extensions.
+struct SourcePromoteNewlyExtsInfo {
+  unsigned NumOfICmpExts = 0;
+  unsigned NumOfInsertedExts = 0;
+};
+
+SourcePromoteNewlyExtsInfo ExtRewritePlanner::getSourcePromoteNewlyExtsInfo(
+    const SourcePromoteGraph &G, const PromoteConstraintSolver &Solver) {
+  SourcePromoteNewlyExtsInfo NewlyExtsInfo;
+  unsigned NumOfICmpExts = 0;
+  unsigned NumOfInsertedExts = 0;
+  for (const auto &VI : llvm::make_first_range(G.Nodes)) {
+    auto *I = dyn_cast<Instruction>(VI);
+    if (!I)
+      continue;
+
+    for (auto [OpIdx, OpUse] : enumerate(I->operands())) {
+      if (!isWidenedOp(OpUse))
+        continue;
+
+      auto OpU = OpUse.get();
+      if (isa<ICmpInst>(OpU) && G.containsNode(OpU)) {
+        ++NumOfICmpExts;
+        ++NumOfInsertedExts;
+      }
+    }
+  }
+  NewlyExtsInfo.NumOfICmpExts = NumOfICmpExts;
+  NewlyExtsInfo.NumOfInsertedExts = NumOfInsertedExts;
+  return NewlyExtsInfo;
+}
+
+WideProfit
+ExtRewritePlanner::getWideGraphProf(const SourcePromoteGraph &G,
+                                    const PromoteConstraintSolver &Solver) {
+  WideProfit P;
+  auto &Info = P.Info;
+
+  Type *DstTy = Type::getIntNTy(Ctx, G.DstWidth);
+  Type *OldTy = Type::getIntNTy(Ctx, G.SrcWidth);
+  Type *I1Ty = Type::getInt1Ty(Ctx);
+  TTI::TargetCostKind CostKind =
+      OptimizeForSize ? TTI::TCK_CodeSize : TTICostKind;
+
+  // Credit removed instructions and a non-empty promoted graph.
+  P.GreedyProfit = G.InstsToRemove.size() + G.InstsToReplaceWithOperand.size() +
+                   G.ExtsToReplaceWithOperand.size() +
+                   (G.Nodes.empty() ? 0 : 1);
+
+  // Ignore negative costs.
+  auto Clamp = [](InstructionCost C) {
+    if (!C.isValid())
+      return C;
+    return C < 0 ? InstructionCost(0) : C;
+  };
+
+  auto AddTTICost = [&](InstructionCost &Total, InstructionCost C) {
+    Total += Clamp(C);
+  };
+
+  auto CastCost = [&](unsigned Opc, Type *SrcTy, Type *DstTy,
+                      const Instruction *I = nullptr) {
+    return Clamp(TTI->getCastInstrCost(
+        Opc, DstTy, SrcTy, TTI::CastContextHint::Normal, CostKind, I));
+  };
+
+  auto isKnownNonLosingTrunc = [&](TruncInst *Tr, IntegerFillType Fill) {
+    KnownBits Known;
+    WiaInfo.GetKnownBitsCached(Tr->getOperand(0), Known);
+    unsigned ExtraBits =
+        Known.getBitWidth() - Tr->getType()->getIntegerBitWidth();
+    // Check if the high bits that are being truncated
+    // have already the same fill form and they can be recovered
+    // by a sext or zext.`
+    return Fill == SIGN
+               ? Known.countMinSignBits() > ExtraBits
+               : Fill == ZEROS && Known.countMinLeadingZeros() >= ExtraBits;
+  };
+
+  auto ExistingInstCost = [&](Instruction *I) {
+    if (auto *CI = dyn_cast<CastInst>(I)) {
+      if (auto *Tr = dyn_cast<TruncInst>(CI)) {
+        auto Fill = Solver.getRequiredFill().lookup_or(Tr, UNDEFINED);
+        if ((Fill == SIGN || Fill == ZEROS) &&
+            isKnownNonLosingTrunc(Tr, Fill)) {
+          Info.RemovesFreeExt = true;
+          return InstructionCost(0);
+        }
+      } else if (isa<SExtInst, ZExtInst>(CI)) {
+        if (auto *Tr = dyn_cast<TruncInst>(CI->getOperand(0));
+            Tr && Tr->getSrcTy() == CI->getDestTy() &&
+            isKnownNonLosingTrunc(Tr, isa<SExtInst>(CI) ? SIGN : ZEROS)) {
+          Info.RemovesFreeExt = true;
+          return InstructionCost(0);
+        }
+      }
+
+      if ((isa<SExtInst>(CI) || isa<ZExtInst>(CI)) && WiaInfo.IsExtFree(CI)) {
+        Info.RemovesFreeExt = true;
+        return InstructionCost(0);
+      }
+      return CastCost(CI->getOpcode(), CI->getSrcTy(), CI->getDestTy(), CI);
+    }
+
+    return Clamp(TTI->getInstructionCost(I, CostKind));
+  };
+
+  // Get the cost at Type Ty.
+  auto GetInstCostAtTy = [&](Instruction *I, Type *Ty) -> InstructionCost {
+    if (isa<PHINode>(I))
+      return InstructionCost(0);
+
+    if (auto *II = dyn_cast<IntrinsicInst>(I)) {
+      SmallVector<Type *, 4> ParamTys;
+      for (const Use &Arg : II->args())
+        ParamTys.push_back(isWidenedOp(Arg) ? Ty : Arg->getType());
+
+      return Clamp(TTI->getIntrinsicInstrCost(
+          IntrinsicCostAttributes(II->getIntrinsicID(), Ty, ParamTys),
+          CostKind));
+    }
+
+    switch (I->getOpcode()) {
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::Mul:
+    case Instruction::And:
+    case Instruction::Or:
+    case Instruction::Xor:
+    case Instruction::Shl:
+    case Instruction::LShr:
+    case Instruction::AShr:
+    case Instruction::UDiv:
+    case Instruction::SDiv:
+    case Instruction::URem:
+    case Instruction::SRem:
+      return Clamp(TTI->getArithmeticInstrCost(I->getOpcode(), Ty, CostKind));
+    case Instruction::ICmp: {
+      auto *Cmp = cast<ICmpInst>(I);
+      return Clamp(TTI->getCmpSelInstrCost(Instruction::ICmp, Ty, I1Ty,
+                                           Cmp->getPredicate(), CostKind));
+    }
+    case Instruction::Select:
+      return Clamp(TTI->getCmpSelInstrCost(
+          Instruction::Select, Ty, I->getOperand(0)->getType(),
+          CmpInst::BAD_ICMP_PREDICATE, CostKind));
+    default:
+      return InstructionCost::getInvalid();
+    }
+  };
+
+  SmallPtrSet<Instruction *, 16> Added;
+  auto AddOldCost = [&](Instruction *I) {
+    // Don't count the same I cost twice.
+    if (!Added.insert(I).second)
+      return;
+
+    if (isa<SExtInst>(I) || isa<ZExtInst>(I))
+      Info.RemovedExtensions.push_back(cast<CastInst>(I));
+
+    AddTTICost(P.TTIOldCost, ExistingInstCost(I));
+  };
+
+  // See the cost for the instructions we will remove.
+  for (Instruction *I : G.InstsToRemove)
+    AddOldCost(I);
+
+  // Similarly, for the extensions.
+  for (Instruction *I : G.ExtsToReplaceWithOperand)
+    AddOldCost(I);
+
+  auto IsArithmPromotedOpc = [](unsigned Opc) {
+    switch (Opc) {
+    case Instruction::Add:
+    case Instruction::Sub:
+    case Instruction::Mul:
+    case Instruction::And:
+    case Instruction::Or:
+    case Instruction::Xor:
+    case Instruction::Shl:
+    case Instruction::LShr:
+    case Instruction::AShr:
+      return true;
+    default:
+      return false;
+    }
+  };
+
+  for (const auto &Entry : G.Nodes) {
+    auto *I = dyn_cast<Instruction>(Entry.first);
+    if (!I || G.InstsToReplaceWithOperand.contains(I))
+      continue;
+    auto Opc = I->getOpcode();
+    // On x86 promoting to i16 or i64 can increase code size.
+    if (IsArithmPromotedOpc(Opc)) {
+      if (G.DstWidth == 16)
+        ++Info.NumOfPromotedToI16;
+      else if (G.DstWidth == 64)
+        ++Info.NumOfPromotedToI64;
+    }
+    Info.HasPhi |= isa<PHINode>(I);
+    if (isBitwiseNot(I))
+      ++Info.NumOfPromotedNots;
+
+    Info.HasBool |= G.SrcWidth == 1 && isBooleanLike(I);
+    Info.hasByteCmp |= G.DstWidth > 8 && isNarrowByteCompare(I);
+    Info.hasMinMax |= isa<MinMaxIntrinsic>(I);
+    Info.NumSignedDiv += Opc == Instruction::SDiv ? 1 : 0;
+    Info.NumUDiv += Opc == Instruction::UDiv ? 1 : 0;
+    Info.NumSignedRem += Opc == Instruction::SRem ? 1 : 0;
+    Info.NumURem += Opc == Instruction::URem;
+
+    if (Opc == Instruction::Select)
+      ++Info.NumOfPromotedSelect;
+
+    if (auto *Phi = dyn_cast<PHINode>(I)) {
+      ++Info.NumOfPromotedPhi;
+      Info.MaxPromotedPhiIncValues =
+          std::max(Info.MaxPromotedPhiIncValues, Phi->getNumIncomingValues());
+    }
+    // This matters for x86
+    if (Opc == Instruction::Add || Opc == Instruction::Sub ||
+        Opc == Instruction::Mul || Opc == Instruction::And ||
+        Opc == Instruction::Or || Opc == Instruction::Xor ||
+        Opc == Instruction::Shl || Opc == Instruction::LShr ||
+        Opc == Instruction::AShr || Opc == Instruction::UDiv ||
+        Opc == Instruction::SDiv || Opc == Instruction::URem ||
+        Opc == Instruction::SRem || Opc == Instruction::Select) {
+      Info.HasDangerousOpc = true;
+      ++Info.NumOfDangerousOpcodes;
+    }
+    if (Opc == Instruction::And && (isa<ConstantInt>(I->getOperand(0)) ||
+                                    isa<ConstantInt>(I->getOperand(1))))
+      Info.HasAndWithConstantMask = true;
+
+    if (auto *Cmp = dyn_cast<ICmpInst>(I))
+      OldTy = Cmp->getOperand(0)->getType();
+
+    AddTTICost(P.TTIOldCost, GetInstCostAtTy(I, OldTy));
+    AddTTICost(P.TTINewCost, GetInstCostAtTy(I, DstTy));
+
+    for (Use &U : I->operands()) {
+      if (!isWidenedOp(U))
+        continue;
+
+      auto *C = dyn_cast<ConstantInt>(U.get());
+      if (!C)
+        continue;
+
+      const auto &ReqFills = Solver.getRequiredFill();
+      const auto &OpFills = Solver.getRequiredOperandFill();
+
+      auto It = OpFills.find(&U);
+      IntegerFillType Fill = It != OpFills.end()
+                                 ? It->second
+                                 : ReqFills.lookup_or(U.get(), G.Fill);
+
+      if (Fill == ANYTHING)
+        Fill = C->isNegative() ? SIGN : ZEROS;
+
+      APInt WideImm = Fill == SIGN ? C->getValue().sext(G.DstWidth)
+                                   : C->getValue().zext(G.DstWidth);
+      // Count constant materlization cost, sometimes this isn't free.
+      AddTTICost(P.TTIOldCost, TTI->getIntImmCostInst(
+                                   I->getOpcode(), U.getOperandNo(),
+                                   C->getValue(), C->getType(), CostKind, I));
+
+      AddTTICost(P.TTINewCost,
+                 TTI->getIntImmCostInst(I->getOpcode(), U.getOperandNo(),
+                                        WideImm, DstTy, CostKind));
+    }
+  }
+
+  // Follow casts to find uses that request a wide value
+  auto CountExtLoadsMats = [&](Value *Load) {
+    ExtLoadMats Mats;
+    SmallVector<Value *, 8> Worklist = {Load};
+    SmallPtrSet<Value *, 8> Visited;
+    auto *LI = dyn_cast<LoadInst>(Load);
+
+    auto RecordMaterialization = [&](Use &U, Instruction *User) {
+      ++Mats.Count;
+      BasicBlock *BB = User->getParent();
+      if (auto *Phi = dyn_cast<PHINode>(User))
+        BB = Phi->getIncomingBlock(U.getOperandNo());
+
+      Mats.AllInLoadBlock &= LI && BB == LI->getParent();
+    };
+
+    while (!Worklist.empty()) {
+      Value *V = Worklist.pop_back_val();
+      if (!Visited.insert(V).second)
+        continue;
+
+      if (!V->hasUseList())
+        continue;
+
+      for (Use &U : V->uses()) {
+        auto *UI = dyn_cast<Instruction>(U.getUser());
+        if (!UI || (isa<SelectInst>(UI) && U.getOperandNo() == 0))
+          continue;
+
+
+        if (UI == G.Ext || G.ExtsToReplaceWithOperand.contains(UI))
+          RecordMaterialization(U, UI);
+        else if (G.InstsToReplaceWithOperand.contains(UI))
+          Worklist.push_back(UI);
+        else if (G.containsNode(UI))
+          RecordMaterialization(U, UI);
+        else if (llvm::any_of(
+                     G.BoundaryRewrites, [&](const BoundaryRewrite &R) {
+                       return R.Kind == RepairNarrowValue && R.ExtUse == &U;
+                     })) {
+          RecordMaterialization(U, UI);
+        }
+      }
+    }
+    return Mats;
+  };
+
+  // Predict load extension folding.
+  auto CanFoldExtLoad = [&](Value *Load, const ExtLoadMats &Mats,
+                            IntegerFillType Fill) {
+    const auto *LI = dyn_cast<LoadInst>(Load);
+
+    if (!LI)
+      return false;
+
+    bool isSharedFree =
+        Fill == ZEROS && TTI->isLoadExtFreeForMultipleUses(
+                             LI, DstTy, Instruction::ZExt, Mats.AllInLoadBlock);
+
+    if (Mats.Count != 1 && !isSharedFree)
+      return false;
+
+    for (User *U : Load->users()) {
+      auto *UI = dyn_cast<Instruction>(U);
+      if (!UI)
+        return false;
+
+      if (UI == G.Ext || G.containsNode(UI) ||
+          G.InstsToReplaceWithOperand.contains(UI))
+        continue;
+
+      if (isSharedFree) {
+        // Accept supported surviving users.
+        // The graph can remain wide and the ext is folded onto the load.
+        auto *ZExt = dyn_cast<ZExtInst>(UI);
+        if (ZExt && ZExt->getDestTy()->getIntegerBitWidth() <= G.DstWidth)
+          continue;
+
+        if (isa<PHINode>(UI))
+          continue;
+
+        auto Opc = UI->getOpcode();
+        if (Opc == Instruction::Add || Opc == Instruction::Sub)
+          continue;
+
+        if (const auto *ICmp = dyn_cast<ICmpInst>(UI))
+          if (!ICmp->isSigned())
+            continue;
+
+        if (isa<SwitchInst>(UI))
+          continue;
+      }
+
+      return false;
+    }
+
+    if (isSharedFree)
+      return true;
+
+    return true;
+  };
+
+  // Charge load extensions costs.
+  for (const auto &[V, Fill] : Solver.getLoadsToExtend()) {
+    auto Mats = CountExtLoadsMats(V);
+    unsigned MatCount = Mats.Count;
+
+    unsigned ExtOpc = Fill == SIGN ? Instruction::SExt : Instruction::ZExt;
+    bool FoldedFree = CanFoldExtLoad(V, Mats, Fill);
+    InstructionCost LeafCost = 0;
+    if (!FoldedFree)
+      LeafCost = WiaInfo.GetExtTTICost(V->getType(), DstTy, Fill);
+
+    InstructionCost MeasuredCost = 0;
+    if (!FoldedFree) {
+      MeasuredCost = CastCost(ExtOpc, V->getType(), DstTy);
+      MeasuredCost *= static_cast<int64_t>(MatCount);
+      AddTTICost(P.TTINewCost, MeasuredCost);
+    }
+    Info.ExtendedLoads.push_back(
+        {cast<LoadInst>(V), ExtOpc, MatCount, MeasuredCost});
+
+    P.GreedyCost += MatCount * LeafCost;
+    if (Fill == SIGN) {
+      ++Info.NumOfSignExtLoads;
+      Info.NumOfSignExtLoadMats += MatCount;
+    } else if (Fill == ZEROS)
+      ++Info.NumOfZExtLoads;
+  }
+
+  // Capture costs for external ops that we need to extend.
+  for (const auto &[V, Fill] : Solver.getExternalOpsToExtend()) {
+    auto Mats = CountExtLoadsMats(V);
+    unsigned MatCount = Mats.Count;
+    if (CanFoldExtLoad(V, Mats, Fill) &&
+        isExtLoadFree(cast<LoadInst>(V), DstTy, Fill, *DL))
+      continue;
+
+    unsigned ExtOpc = Fill == SIGN ? Instruction::SExt : Instruction::ZExt;
+    if (auto *Arg = dyn_cast<Argument>(V)) {
+      if (TLI && TLI->isArgumentExtensionFree(*Arg, DstTy, ExtOpc))
+        continue;
+    }
+
+    // if the V is already sign extended, don't insert a sext.
+    if (auto *Call = dyn_cast<CallInst>(V);
+        Call && !isa<IntrinsicInst>(Call) && !Call->isInlineAsm() &&
+        Fill == SIGN && Call->hasRetAttr(Attribute::SExt) &&
+        (Call->getCallingConv() == CallingConv::C ||
+         Call->getCallingConv() == CallingConv::Fast) &&
+        TLI && TLI->isSExtFree(Call->getType(), DstTy))
+      continue;
+
+    auto ExtOpCost = WiaInfo.GetExtTTICost(V->getType(), DstTy, Fill);
+    P.GreedyCost += MatCount * ExtOpCost;
+
+    InstructionCost Cost = CastCost(ExtOpc, V->getType(), DstTy);
+    Cost *= static_cast<int64_t>(MatCount);
+    AddTTICost(P.TTINewCost, Cost);
+  }
+
+  // Count zero fill pressure, this matters for RV64, because
+  // a zext ins't free on RV64.
+  unsigned ZeroFillPressure = 0;
+  if (G.Fill == ZEROS) {
+    const auto &RequiredFill = Solver.getRequiredFill();
+    for (const auto &Entry : G.Nodes) {
+      auto *I = dyn_cast<Instruction>(Entry.first);
+      if (!I || isa<ICmpInst>(I) || G.InstsToReplaceWithOperand.contains(I))
+        continue;
+
+
+      auto It = RequiredFill.find(I);
+      if (It != RequiredFill.end() && It->second == ZEROS)
+        ++ZeroFillPressure;
+    }
+  }
+
+  bool NeedsSignedZExtRepair = false;
+
+  // A promoted signed value may need to preserve the original zext.
+  if (auto *ZExt = dyn_cast_if_present<ZExtInst>(G.Ext)) {
+    // When a ICmp accepts SIGN we don't need to charge for the mask.
+    // because the comparison produces the same result with either
+    // representation SIGN or ZEROS.
+    bool AcceptsSign =
+        G.Fill == SIGN &&
+        (ZExt->hasNonNeg() || getSignFillICmp(ZExt, G.SrcWidth) ||
+         canUseSignFillForGEP(ZExt, G.SrcWidth, *DL));
+    NeedsSignedZExtRepair =
+        G.NeedsRootZExtRepair || (G.Fill != ZEROS && !AcceptsSign);
+  }
+
+  if (NeedsSignedZExtRepair) {
+    ++P.GreedyCost;
+    ++Info.NumBoundaryRepairs;
+    AddTTICost(P.TTINewCost,
+               TTI->getArithmeticInstrCost(Instruction::And, DstTy, CostKind));
+  }
+
+  Type *SrcTy = Type::getIntNTy(Ctx, G.SrcWidth);
+  // If G.Fill == ZEROS avoid creating srli/slli pairs on RV64
+  // model it with ZeroFillPressure
+  if (G.Fill == ZEROS && G.SrcWidth == 32 && G.DstWidth > 32 &&
+      (G.Nodes.size() > 1 || isa<PHINode>(G.Source)) &&
+      !WiaInfo.IsZExtFree(SrcTy, DstTy))
+    P.GreedyCost += ZeroFillPressure;
+
+  // Account for uses outside the graph that must maintain their narrow type.
+  for (const BoundaryRewrite &Rewrite : G.BoundaryRewrites) {
+    if (Rewrite.Kind != RepairNarrowValue || !Rewrite.ResultTy)
+      continue;
+    ++Info.NumBoundaryRepairs;
+
+    auto *CI = dyn_cast<CastInst>(Rewrite.User);
+    if (CI && isExtOpcode(CI) &&
+        CI->getDestTy()->getScalarSizeInBits() != G.DstWidth) {
+      // Account for boundary cast cost
+      InstructionCost OldExitCost =
+          WiaInfo.IsExtFree(CI)
+              ? InstructionCost(0)
+              : CastCost(CI->getOpcode(), CI->getSrcTy(), CI->getDestTy(), CI);
+      InstructionCost NewExitCost =
+          CastCost(CI->getOpcode(), CI->getSrcTy(), CI->getDestTy());
+      InstructionCost NewBoundaryCost =
+          CastCost(Instruction::Trunc, DstTy, Rewrite.ResultTy) + NewExitCost;
+      if (!OldExitCost.isValid() || !NewBoundaryCost.isValid()) {
+        P.TTINewCost = InstructionCost::getInvalid();
+        return P;
+      }
+      if (NewBoundaryCost > OldExitCost)
+        ++P.GreedyCost;
+
+      AddTTICost(P.TTIOldCost, OldExitCost);
+      AddTTICost(P.TTINewCost, NewBoundaryCost);
+      continue;
+    }
+
+    bool IsNsw =
+        hasFreeSignedRepair(Rewrite, G.SrcWidth, Solver.getRequiredFill());
+    if (auto *Trunc = dyn_cast<TruncInst>(Rewrite.OriginalValue))
+      IsNsw |= Trunc->hasNoSignedWrap() &&
+               G.InstsToReplaceWithOperand.contains(Trunc) &&
+               Trunc->getSrcTy() == DstTy &&
+               Trunc->getDestTy() == Rewrite.ResultTy;
+
+    bool HasZeroFill =
+        hasFreeUnsignedRepair(Rewrite, G.SrcWidth, Solver.getRequiredFill());
+
+    auto *CB = dyn_cast<CallBase>(Rewrite.User);
+    auto *SI = dyn_cast<StoreInst>(Rewrite.User);
+
+    bool IsNarrowBoundary = (CB && CB->isArgOperand(Rewrite.ExtUse)) ||
+                            (SI && Rewrite.ExtUse == &SI->getOperandUse(0));
+    // If we are going to truncate something
+    // ensure it's not a loop counter, otherwise LSR
+    // might create a new loop counter for that loop
+    // and that can increase the register pressure.
+    if (IsNarrowBoundary) {
+      auto *Phi = dyn_cast<PHINode>(Rewrite.OriginalValue);
+      Loop *L = Phi ? getLoopCarriedPhiLoop(Phi, LI) : nullptr;
+      BinaryOperator *Update = nullptr;
+      Value *Start = nullptr, *Step = nullptr;
+      bool IsLoopCounterArg = L && IsNarrowBoundary &&
+                              L->contains(Rewrite.User->getParent()) &&
+                              G.containsNode(Phi) &&
+                              matchSimpleRecurrence(Phi, Update, Start, Step) &&
+                              G.containsNode(Update);
+      if (IsLoopCounterArg) {
+        auto *StepC = dyn_cast<ConstantInt>(Step);
+        unsigned UpdateOpc = Update->getOpcode();
+        // Recognize a fixed nonzero increment or decrement
+        IsLoopCounterArg =
+            StepC && !StepC->isZero() &&
+            (UpdateOpc == Instruction::Add ||
+             (UpdateOpc == Instruction::Sub && Update->getOperand(0) == Phi));
+      }
+
+      // This can increase register pressure because LSR
+      // might create a new counter if we truncate a loop counter
+      // So, reject it.
+      if (IsLoopCounterArg)
+        P.GreedyCost += InstructionCost(2);
+    }
+
+    bool FreeRepair = false;
+    if (auto *CB = dyn_cast<CallBase>(Rewrite.User);
+        CB && CB->isArgOperand(Rewrite.ExtUse)) {
+
+      unsigned ArgNo = CB->getArgOperandNo(Rewrite.ExtUse);
+      if (IsNsw)
+        FreeRepair = TLI->isOutgoingArgumentTruncateFree(*CB, ArgNo, DstTy,
+                                                         Instruction::SExt);
+      if (!FreeRepair && HasZeroFill)
+        FreeRepair = TLI->isOutgoingArgumentTruncateFree(*CB, ArgNo, DstTy,
+                                                         Instruction::ZExt);
+    }
+    if (!FreeRepair) {
+      P.GreedyCost += isa_and_nonnull<CallBase>(Rewrite.User) ? 2 : 1;
+      AddTTICost(P.TTINewCost,
+                 CastCost(Instruction::Trunc, DstTy, Rewrite.ResultTy));
+    }
+  }
+  return P;
+}
+
+static bool isUsedAsCallArg(Instruction *I) {
+  for (Use &U : I->uses()) {
+    if (auto *CB = dyn_cast<CallBase>(U.getUser()))
+      if (CB->isArgOperand(&U) && !isa<IntrinsicInst>(CB))
+        return true;
+  }
+  return false;
+}
+
+static bool isLoopUpdatedInst(Instruction *I) {
+  switch (I->getOpcode()) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::Select:
+    return true;
+  }
+  return false;
+}
+
+static bool isGEPIndexUse(Use &U) {
+  auto *Gep = dyn_cast<GetElementPtrInst>(U.getUser());
+  return Gep && U.getOperandNo() != GetElementPtrInst::getPointerOperandIndex();
+}
+
+// Try to get a loop that contains values inside the SeedsLoop DenseMap.
+static Loop *getLoopPartOfSeeds(Value *Root,
+                                const DenseMap<Value *, Loop *> &SeedsLoops,
+                                const SourcePromoteGraph &G) {
+  SmallVector<Value *, 8> Worklist;
+  SmallPtrSet<Value *, 16> Seen;
+  Loop *LocatedLoop = nullptr;
+
+  Worklist.push_back(Root);
+  while (!Worklist.empty()) {
+    Value *V = Worklist.pop_back_val();
+    if (!Seen.insert(V).second)
+      continue;
+
+    auto It = SeedsLoops.find(V);
+    if (It != SeedsLoops.end()) {
+      // Seeds from different loops do not identify one loop
+      // for this expression.
+      if (LocatedLoop && LocatedLoop != It->second)
+        return nullptr;
+      LocatedLoop = It->second;
+      continue;
+    }
+
+    auto *I = dyn_cast<Instruction>(V);
+    // Only traverse instructions in the promotion graph.
+    if (!I || !G.containsNode(I))
+      continue;
+    for (Value *Op : I->operands())
+      Worklist.push_back(Op);
+  }
+  return LocatedLoop;
+}
+
+static void collectNarrowPhiPromoteStats(const SourcePromoteGraph &G,
+                                         TTI::WIAPromotionInfo &Info) {
+  if (G.SrcWidth >= 32 || G.DstWidth <= 32)
+    return;
+
+  auto VisitExt = [&](Instruction *Ext) {
+    if (!isExtOpcode(Ext))
+      return;
+
+    bool HasGEPIndexUse = false;
+    for (Use &U : Ext->uses()) {
+      if (isGEPIndexUse(U)) {
+        HasGEPIndexUse = true;
+        break;
+      }
+    }
+    if (!HasGEPIndexUse)
+      return;
+
+    auto *Phi = dyn_cast<PHINode>(Ext->getOperand(0));
+    if (!Phi || !G.containsNode(Phi))
+      return;
+
+    ++Info.NumNarrowPhiGEPIndexExtsRemoved;
+    unsigned NumOfNoConstInc = 0;
+    for (unsigned I = 0, E = Phi->getNumIncomingValues(); I != E; ++I) {
+      if (!isa<ConstantInt>(Phi->getIncomingValue(I)))
+        ++NumOfNoConstInc;
+    }
+
+    if (NumOfNoConstInc > 1)
+      Info.NumNarrowPhiExtraIncomingExts += NumOfNoConstInc - 1;
+  };
+
+  for (Instruction *I : G.InstsToRemove)
+    VisitExt(I);
+  for (Instruction *I : G.ExtsToReplaceWithOperand)
+    VisitExt(I);
+}
+
+// Find loop-carried phis and removed extensions.
+// Distinguish extensions inside the loop from those outside of loops.
+static void collectLoopPromoteStats(const SourcePromoteGraph &G, LoopInfo *LI,
+                                    TTI::WIAPromotionInfo &Info) {
+  DenseMap<Value *, Loop *> SeedsLoops;
+  SmallPtrSet<Instruction *, 8> WideUses;
+
+  for (Value *V : llvm::make_first_range(G.Nodes)) {
+    auto *Phi = dyn_cast<PHINode>(V);
+    if (!Phi)
+      continue;
+
+    auto *Loop = getLoopCarriedPhiLoop(Phi, LI);
+
+    if (!Loop)
+      continue;
+
+    SeedsLoops.try_emplace(Phi, Loop);
+    ++Info.LoopCarriedPhisWidened;
+  }
+
+  if (SeedsLoops.empty())
+    return;
+
+  // Count add/sub/select instructions that depend on the seeds
+  // and are inside the same loop.
+  for (Value *V : llvm::make_first_range(G.Nodes)) {
+    auto *I = dyn_cast<Instruction>(V);
+
+
+    if (!I || !isLoopUpdatedInst(I))
+      continue;
+
+    Loop *SeedLoop = getLoopPartOfSeeds(I, SeedsLoops, G);
+    if (SeedLoop && SeedLoop->contains(I->getParent()))
+      ++Info.LoopCarriedRelevantWidened;
+  }
+
+  for (Instruction *I : G.InstsToRemove) {
+    if (!isExtOpcode(I))
+      continue;
+
+    Loop *SeedLoop = getLoopPartOfSeeds(I->getOperand(0), SeedsLoops, G);
+
+    if (!SeedLoop)
+      continue;
+
+    if (!SeedLoop->contains(I->getParent())) {
+      ++Info.LoopCarriedExtHoistedOutOfLoop;
+      continue;
+    }
+
+    ++Info.LoopCarriedExtsRemoved;
+
+    for (Use &U : I->uses()) {
+      auto *UI = dyn_cast<Instruction>(U.getUser());
+      if (!UI)
+        continue;
+
+      if (isGEPIndexUse(U)) {
+        ++Info.LoopCarriedGEPIndexExtsRemoved;
+        WideUses.insert(UI);
+      }
+    }
+  }
+  Info.LoopCarriedWideUses = WideUses.size();
+  return;
+}
+
+static bool isGEPIndexArithm(Instruction *I) {
+  switch (I->getOpcode()) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::Mul:
+  case Instruction::Shl:
+  case Instruction::LShr:
+  case Instruction::AShr:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+    return true;
+  default:
+    return false;
+  }
+  return false;
+}
+
+static bool isShiftOpcode(unsigned Opc) {
+  return Opc == Instruction::Shl || Opc == Instruction::LShr ||
+         Opc == Instruction::AShr;
+}
+
+// Check if instruction's result is used as a GEP index
+static bool isGEPIndexExt(Instruction *Ext) {
+  for (Use &U : Ext->uses())
+    if (isGEPIndexUse(U))
+      return true;
+  return false;
+}
+
+// Check if a comparison of I controls a branch in I's block with
+// UseBB as a direct sucessor.
+static bool feedsGuardBranchInProducerBlock(Instruction *I, BasicBlock *UseBB) {
+  for (User *U : I->users()) {
+    auto *Cmp = dyn_cast<ICmpInst>(U);
+    if (!Cmp)
+      continue;
+
+    for (User *CU : Cmp->users()) {
+      auto *CBI = dyn_cast<CondBrInst>(CU);
+      if (!CBI)
+        continue;
+
+      if (CBI->getParent() != I->getParent())
+        continue;
+
+      if (CBI->getSuccessor(0) == UseBB || CBI->getSuccessor(1) == UseBB)
+        return true;
+    }
+  }
+
+  return false;
+}
+
+// Find shifted GEP index extensions below a local branch.
+static bool isGuardedGEPIndexExtRemoved(Instruction *Ext,
+                                        const SourcePromoteGraph &G,
+                                        LoopInfo *LI) {
+  if (!isExtOpcode(Ext) || !isGEPIndexExt(Ext))
+    return false;
+
+  auto *Producer = dyn_cast<Instruction>(Ext->getOperand(0));
+  if (!Producer || !G.containsNode(Producer))
+    return false;
+
+  if (!isShiftOpcode(Producer->getOpcode()))
+    return false;
+
+  if (Producer->getParent() == Ext->getParent())
+    return false;
+
+  // Keep loop cases alive; those may really amortize the moved extension.
+  if (LI && (LI->getLoopFor(Producer->getParent()) ||
+             LI->getLoopFor(Ext->getParent())))
+    return false;
+
+  return feedsGuardBranchInProducerBlock(Producer, Ext->getParent());
+}
+
+// Count removed index extensions and wide GEP uses, then walk
+// their producers to count the arithmetic operations being promoted.
+static void collectGEPIndexPromoteStats(const SourcePromoteGraph &G,
+                                        LoopInfo *LI,
+                                        TTI::WIAPromotionInfo &Info) {
+  SmallPtrSet<Instruction *, 8> ExtsRemoved;
+  SmallVector<Value *, 8> GepIdxRoots;
+  for (auto I : G.InstsToRemove) {
+    if (isExtOpcode(I)) {
+      ExtsRemoved.insert(I);
+    }
+  }
+  for (Instruction *I : G.ExtsToReplaceWithOperand) {
+    if (isExtOpcode(I)) {
+      ExtsRemoved.insert(I);
+    }
+  }
+
+  for (Instruction *Ext : ExtsRemoved) {
+    for (Use &U : Ext->uses()) {
+      if (!isGEPIndexUse(U))
+        continue;
+
+      ++Info.NumGEPIndexExtsRemoved;
+      ++Info.NumWideGEPIndexUses;
+      GepIdxRoots.push_back(Ext->getOperand(0));
+    }
+
+    if (isGuardedGEPIndexExtRemoved(Ext, G, LI))
+      ++Info.NumGuardedGEPIndexExtsRemoved;
+  }
+  for (const auto &[V, _] : G.Nodes) {
+    auto *I = dyn_cast<Instruction>(V);
+    if (!I)
+      continue;
+
+    for (Use &U : I->uses()) {
+      if (!isGEPIndexUse(U))
+        continue;
+
+      ++Info.NumWideGEPIndexUses;
+      GepIdxRoots.push_back(I);
+    }
+  }
+
+  SmallPtrSet<Value *, 16> Seen;
+  while (!GepIdxRoots.empty()) {
+    Value *V = GepIdxRoots.pop_back_val();
+    if (!Seen.insert(V).second)
+      continue;
+
+    auto *I = dyn_cast<Instruction>(V);
+    if (!I || !G.containsNode(I))
+      continue;
+
+    if (G.InstsToReplaceWithOperand.contains(I))
+      continue;
+
+    if (isGEPIndexArithm(I))
+      ++Info.NumPromotedGEPIndexArith;
+
+    for (Value *Op : I->operands())
+      if (G.containsNode(Op))
+        GepIdxRoots.push_back(Op);
+  }
+}
+
+SourcePromoteProfitDecision ExtRewritePlanner::getSourcePromoteProfitDecision(
+    const SourcePromoteGraph &G, const PromoteConstraintSolver &Solver) {
+  SourcePromoteProfitDecision D;
+  if (G.InstsToRemove.empty() && !G.IsICmpRoot) {
+    D.Reason = "NoRemovableExt";
+    return D;
+  }
+
+  if (G.Nodes.empty() && Solver.getLoadsToExtend().empty()) {
+    D.Reason = "NoGraphNodes";
+    return D;
+  }
+
+  D.Profit = getWideGraphProf(G, Solver);
+  WideProfit &P = D.Profit;
+
+  if (!P.TTIOldCost.isValid() || !P.TTINewCost.isValid()) {
+    D.Reason = "InvalidCost";
+    return D;
+  }
+
+  if (!P.GreedyCost.isValid()) {
+    D.Reason = "InvalidCost";
+    return D;
+  }
+
+  TTI::WIAPromotionInfo &Info = P.Info;
+  Info.SrcWidth = G.SrcWidth;
+  Info.DstWidth = G.DstWidth;
+  Info.NumPromotedInsts = G.Nodes.size();
+  Info.NumExtsRemoved = G.InstsToRemove.size();
+  Info.NumInstsToReplaceWithOperand = G.InstsToReplaceWithOperand.size();
+  Info.IsSourcePhiOrSelect =
+      isa<PHINode>(G.Source) || isa<SelectInst>(G.Source);
+
+  collectLoopPromoteStats(G, LI, Info);
+  collectGEPIndexPromoteStats(G, LI, Info);
+  collectNarrowPhiPromoteStats(G, Info);
+
+  auto IsFreeWideBoolExt = [&](Instruction *I) {
+    auto *CI = dyn_cast<CastInst>(I);
+    return CI && (isa<SExtInst>(CI) || isa<ZExtInst>(CI)) &&
+           CI->getSrcTy()->isIntegerTy(1) && CI->getDestTy()->isIntegerTy() &&
+           CI->getDestTy()->getScalarSizeInBits() > 8 && WiaInfo.IsExtFree(CI);
+  };
+
+  Info.RemovesBoolExt =
+      llvm::any_of(G.InstsToRemove, IsFreeWideBoolExt) ||
+      llvm::any_of(G.ExtsToReplaceWithOperand, IsFreeWideBoolExt);
+
+  bool RemovesExtCallArg = llvm::any_of(G.InstsToRemove, [](Instruction *I) {
+    return isa<CastInst>(I) && isUsedAsCallArg(I);
+  });
+
+  Info.RemovesExtCallArg = RemovesExtCallArg;
+
+  auto [ICmpExts, InsertedExts] = getSourcePromoteNewlyExtsInfo(G, Solver);
+
+  bool TinyExtLoadOnly = G.Nodes.empty() && G.InstsToRemove.size() == 1 &&
+                         G.InstsToReplaceWithOperand.empty() &&
+                         Solver.getLoadsToExtend().size() == 1 &&
+                         InsertedExts == 0;
+
+  Info.NumOfInsertedExts = InsertedExts;
+
+  InstructionCost ExtraTargetPromotionBenefit =
+      TTI->getWIAPromotionBenefit(Info, TTI::TCK_CodeSize);
+  int ExtraTargetGreedyProfit =
+      TTI->getWIAPromotionProfitBonus(Info, TTI::TCK_CodeSize);
+
+  if (!ExtraTargetPromotionBenefit.isValid()) {
+    D.Reason = "InvalidCost";
+    return D;
+  }
+
+  // TTI isn't accurate always, so we use our own GreedyProfit
+  // together with TTI, so can have a better chance of a correct choice.
+  D.GreedyDiff = P.GreedyProfit - P.GreedyCost + ExtraTargetGreedyProfit;
+
+  if (D.GreedyDiff <= -1) {
+    D.Reason = "NegativeGreedyDiff";
+    return D;
+  }
+
+  InstructionCost TargetPromotionCost =
+      TTI->getWIAPromotionCost(Info, TTI::TCK_CodeSize);
+
+  if (!TargetPromotionCost.isValid()) {
+    D.Reason = "InvalidCost";
+    return D;
+  }
+
+  D.TTIOld = P.TTIOldCost;
+  D.TTINew = P.TTINewCost;
+
+  InstructionCost PreTTIDiff =
+      P.TTIOldCost - (P.TTINewCost + TargetPromotionCost);
+
+  if (TinyExtLoadOnly && PreTTIDiff <= 0) {
+    D.TTIDiff = PreTTIDiff;
+    D.Reason = "TinyExtLoadOnlyNoTTIWin";
+    return D;
+  }
+
+  InstructionCost NewTargetCost =
+      P.TTINewCost + TargetPromotionCost - ExtraTargetPromotionBenefit;
+
+  D.TTIDiff = (P.TTIOldCost - NewTargetCost);
+
+  // If the both costs agree and the old TTICost is greater than
+  // the new target cost we can perform the transformation.
+  if (D.GreedyDiff >= 2 && D.TTIDiff > 0) {
+    D.Profitable = true;
+    D.Reason = "GreedyAndTTIWin";
+    return D;
+  } else if (D.TTIDiff < 0) {
+    D.Reason = "TTILoss";
+    return D;
+  }
+
+  // If we have an greedy choice but we remove a free cast
+  // do not account as profitable, this may lose some cases.
+  D.Profitable = D.GreedyDiff >= 1 && Info.RemovesFreeExt == false;
+  D.Reason = D.Profitable ? "Profitable" : "BelowRequiredProfit";
+  return D;
+}
+
+std::optional<ExtRewritePlan>
+ExtRewritePlanner::tryToBuildSplitExtUsesPlan(CastInst *Ext) {
+
+  auto *ZExt = dyn_cast<ZExtInst>(Ext);
+  if (!ZExt)
+    return std::nullopt;
+
+  if (Ext->hasOneUse())
+    return std::nullopt;
+
+  unsigned SrcWidth = ZExt->getSrcTy()->getScalarSizeInBits();
+  bool HasSExtUse = false;
+  bool HasZExtUse = false;
+  bool AllSignUsesAreZeroICmps = true;
+  // TODO: maybe exit early if we found HasSExtUse and HasZExtUse.
+  for (auto &U : ZExt->uses()) {
+    if (canUseSignFillForICmpUse(U, SrcWidth)) {
+      HasSExtUse = true;
+      auto *Cmp = cast<ICmpInst>(U.getUser());
+      auto *C = cast<ConstantInt>(Cmp->getOperand(1 - U.getOperandNo()));
+      AllSignUsesAreZeroICmps &= Cmp->isEquality() && C->isZero();
+    } else
+      HasZExtUse = true;
+  }
+  if (!HasZExtUse || !HasSExtUse)
+    return std::nullopt;
+
+  if (!TTI)
+    return std::nullopt;
+
+  Value *Src = ZExt->getOperand(0);
+  Type *DstTy = ZExt->getDestTy();
+
+  InstructionCost AddedCost =
+      TTI->getCastInstrCost(Instruction::SExt, DstTy, Src->getType(),
+                            TTI::CastContextHint::Normal, TTI::TCK_CodeSize);
+
+  if (auto *Arg = dyn_cast<Argument>(Src);
+      Arg && TLI &&
+      TLI->isArgumentExtensionFree(*Arg, DstTy, Instruction::SExt))
+    AddedCost = 0;
+
+  if (auto *Call = dyn_cast<CallInst>(Src);
+      Call && !isa<IntrinsicInst>(Call) && !Call->isInlineAsm() &&
+      Call->hasRetAttr(Attribute::SExt) &&
+      (Call->getCallingConv() == CallingConv::C ||
+       Call->getCallingConv() == CallingConv::Fast) &&
+      TLI && TLI->isSExtFree(Call->getType(), DstTy))
+    AddedCost = 0;
+
+  // We can fold the sext onto the icmp
+  // icmp eq (sext %x), 0  →  icmp eq %x, 0
+  if (AllSignUsesAreZeroICmps)
+    AddedCost = 0;
+
+  if (!AddedCost.isValid() || AddedCost != 0)
+    return std::nullopt;
+
+  ExtRewritePlan Plan = makeSimplePlan(Ext);
+  Plan.Kind = ExtStrategy::SplitExtUses;
+  Plan.NarrowWidth = SrcWidth;
+  Plan.WideWidth = ZExt->getDestTy()->getScalarSizeInBits();
+  return Plan;
+}
+
+std::optional<ExtRewritePlan>
+ExtRewritePlanner::buildSequencePlan(SourcePromoteGraph &PromG,
+                                     Instruction *Root) {
+  if ((PromG.InstsToRemove.empty() && !PromG.IsICmpRoot) ||
+      (PromG.Nodes.empty() && PromG.LoadsToExtend.empty())) {
+    if (PromG.IsICmpRoot)
+      ++ICmpEmptyRejects;
+    return std::nullopt;
+  }
+
+  auto IsKnownSignExtended = [this](Value *V, unsigned Width) {
+    return isKnownSignExtended(V, Width);
+  };
+
+  CastInst *Ext = PromG.Ext;
+  PromoteConstraintSolver Solver(PromG, WiaInfo, *DL, Ctx, IsKnownSignExtended,
+                                 SharedLegalTuples);
+  bool Solved = Solver.solve();
+  if (!Solved) {
+    if (PromG.IsICmpRoot)
+      ++ICmpSolverRejects;
+    //++NumExtSourcePromoteRejectedConstraintSolver;
+    if (ORE) {
+      ORE->emit([&]() {
+        const auto &Reject = Solver.getRejectInfo();
+        OptimizationRemarkMissed R(DEBUG_TYPE, "ConstraintSolverFailed", Root);
+
+        R << "widening candidate from i" << ore::NV("SrcWidth", PromG.SrcWidth)
+          << " to i" << ore::NV("DstWidth", PromG.DstWidth)
+          << " with root fill "
+          << ore::NV("RootFill", getWIAFillName(PromG.Fill))
+          << " rejected: " << ore::NV("Reason", Reject.Reason);
+
+        if (Reject.V)
+          R << "; value: " << ore::NV("Value", Reject.V);
+
+        if (Reject.User)
+          R << "; user: " << ore::NV("User", Reject.User);
+
+        if (Reject.Fill != UNDEFINED)
+          R << "; needed fill: "
+            << ore::NV("NeededFill", getWIAFillName(Reject.Fill));
+
+        if (Reject.ExistingFill != UNDEFINED)
+          R << "; existing fill: "
+            << ore::NV("ExistingFill", getWIAFillName(Reject.ExistingFill));
+
+        if (Reject.OperandIndex)
+          R << "; operand: " << ore::NV("OperandIndex", *Reject.OperandIndex);
+
+        return R;
+      });
+    }
+
+    PromG.Reject = Solver.getRejectInfo();
+    noteSourcePromoteReject(PromG, "ConstraintSolverFailed", PromG.Source,
+                            nullptr, PromG.Fill);
+    if (Ext) {
+      LLVM_DEBUG(dbgs() << "WIA source-promote rejected: constraint solver "
+                        << "nodes=" << PromG.Nodes.size()
+                        << " remove=" << PromG.InstsToRemove.size()
+                        << " ext-leaves=" << PromG.LoadsToExtend.size()
+                        << " ext=" << *Ext << "\n");
+    }
+    return std::nullopt;
+  }
+
+  SourcePromoteProfitDecision Decision =
+      getSourcePromoteProfitDecision(PromG, Solver);
+
+  LLVM_DEBUG(dbgs() << "WIA source-promote solver succeeded:"
+                    << " profitable=" << Decision.Profitable << " reason="
+                    << Decision.Reason << " root=" << *Root << "\n");
+
+  if (!Decision.Profitable) {
+    if (PromG.IsICmpRoot)
+      ++ICmpProfitRejects;
+
+    if (ORE) {
+      ORE->emit([&]() {
+        StringRef Reason = Decision.Reason;
+        OptimizationRemarkMissed R(DEBUG_TYPE, "SourcePromoteNotProfitable",
+                                   Root);
+        R << "source promotion from i" << ore::NV("SrcWidth", PromG.SrcWidth)
+          << " to i" << ore::NV("DstWidth", PromG.DstWidth)
+          << " rejected: " << ore::NV("Reason", Reason);
+
+        if (Reason != "NoRemovableExt" && Reason != "NoGraphNodes") {
+          R << "; base old cost: "
+            << ore::NV("BaseOldCost", Decision.Profit.TTIOldCost)
+            << "; base new cost: "
+            << ore::NV("BaseNewCost", Decision.Profit.TTINewCost);
+        }
+
+        if (Reason != "InvalidCost") {
+          R << "; greedy difference: "
+            << ore::NV("GreedyDiff", Decision.GreedyDiff)
+            << "; removes free extension: "
+            << ore::NV("RemovesFreeExt", Decision.Profit.Info.RemovesFreeExt);
+        }
+
+        if (Reason != "NegativeGreedyDiff")
+          R << "; TTI difference: " << ore::NV("TTIDiff", Decision.TTIDiff);
+        return R;
+      });
+    }
+
+    return std::nullopt;
+  }
+
+  return makeSourcePromotePlan(PromG, Solver);
+}
+
+std::optional<ExtRewritePlan> ExtRewritePlanner::analyzeExt(CastInst *Ext) {
+
+  if (!isSupportedScalarIntType(Ext->getSrcTy()) ||
+      !isSupportedScalarIntType(Ext->getDestTy()))
+    return std::nullopt;
+
+  auto *Op0 = Ext->getOperand(0);
+  // No plan can handle arg -> ext -> and -> return.
+  if (isa<Argument>(Op0) && Ext->hasOneUse()) {
+    auto *And = dyn_cast<BinaryOperator>(*Ext->user_begin());
+    if (And && And->getOpcode() == Instruction::And && And->hasOneUse() &&
+        isa<ReturnInst>(*And->user_begin()))
+      return std::nullopt;
+  }
+
+  unsigned SrcWidth = Ext->getSrcTy()->getScalarSizeInBits();
+  unsigned DstWidth = Ext->getDestTy()->getScalarSizeInBits();
+
+  if (auto *LI = dyn_cast<LoadInst>(Op0)) {
+    IntegerFillType Fill = isa<SExtInst>(Ext) ? SIGN : ZEROS;
+    ExistingLoadExtInfo ExtLoadInfo;
+    ExtLoadInfo.DstWidth = DstWidth;
+    ExtLoadInfo.Fill = Fill;
+    ExtLoadInfo.Ext = Ext;
+    AlreadyExtLoads[LI].push_back(ExtLoadInfo);
+  }
+
+  // Those are getting rejected later on single use sext(load)
+  // onto a gep instruction, return early here.
+  if (isa<LoadInst>(Op0) && Ext->hasOneUse() &&
+      isa<GetElementPtrInst>(*Ext->user_begin()) &&
+      selectBestFill(Ext) == (isa<SExtInst>(Ext) ? SIGN : ZEROS))
+    return std::nullopt;
+
+  bool HasNonBoundaryUser = llvm::any_of(
+      Ext->users(), [](User *U) { return !isa<TruncInst, ICmpInst>(U); });
+
+  bool HasGEPUser = llvm::any_of(
+      Ext->users(), [](User *U) { return isa<GetElementPtrInst>(U); });
+
+  bool NarrowBuild = false;
+  // Boundary uses don't adds any nodes; the narrow builder also rejects GEPs.
+  if (HasNonBoundaryUser && !HasGEPUser) {
+    ExtRewriteGraph G;
+    G.Ext = Ext;
+    G.Source = Ext->getOperand(0);
+    G.NarrowWidth = SrcWidth;
+    G.WideWidth = DstWidth;
+    NarrowBuild = buildNarrowGraph(Ext, G);
+    if (NarrowBuild && G.WideUses.empty() && isNarrowGraphProfitable(G))
+      return makeGraphPlan(std::move(G), ExtStrategy::NarrowGraph);
+  }
+  // Reject sext(sext) or zext(zext), they are already handled by the
+  // DAGCombiner, or by InstCombine.
+  Instruction *Inner;
+  if (match(Op0, m_OneUse(m_Instruction(Inner))) &&
+      Inner->getParent() == Ext->getParent()) {
+    // Nested extensions are handled by InstCombine/SelectionDAG.
+    if (match(Ext, m_SExt(m_ZExtOrSExt(m_Value()))) ||
+        match(Ext, m_ZExt(m_ZExt(m_Value()))))
+      return std::nullopt;
+
+    // Lossless truncation followed by the corresponding extension.
+    if ((match(Ext, m_SExt(m_NSWTrunc(m_Value()))) ||
+         match(Ext, m_ZExt(m_NUWTrunc(m_Value())))) &&
+        TLI->isTypeLegal(TLI->getValueType(*DL, Ext->getDestTy())))
+      return std::nullopt;
+  }
+
+  // TODO: check if later we can handle sext %arg iN to iZ graphs.
+  // Currently, it is not supported so reject early here.
+  if (isa<Argument>(Op0))
+    return tryToBuildSplitExtUsesPlan(Ext);
+
+  // DAGCombiner can handle those trees.
+  if (isMaskedLoadTree(Ext))
+    return std::nullopt;
+
+  // We have already a plan for this extension as part
+  // of another extension. Those two casts belong
+  // in the same graph.
+  if (CoveredExts.contains(Ext)) {
+    if (auto Plan = tryToBuildSplitExtUsesPlan(Ext))
+      return Plan;
+    // This may lose some opportunities that weren't proven
+    // in the original plan.
+    return std::nullopt;
+  }
+
+  auto SrcTy = Ext->getSrcTy();
+  auto DstTy = Ext->getDestTy();
+  EVT SrcVt = TLI->getValueType(*DL, SrcTy);
+  EVT DstVt = TLI->getValueType(*DL, DstTy);
+  // Skip removing a free sext if it doesn't possible promote
+  // a loop graph.
+  if (auto *SrcI = dyn_cast<Instruction>(Op0);
+      SrcI && SrcI->hasOneUse() && SrcI->getParent() == Ext->getParent() &&
+      isSupportedScalarIntType(Ext->getSrcTy()) &&
+      isSupportedScalarIntType(Ext->getDestTy()) &&
+      selectBestFill(Ext) == SIGN && TLI->isSExtCheaperThanZExt(SrcVt, DstVt) &&
+      TLI->isSExtFree(SrcTy, DstTy) &&
+      llvm::none_of(Ext->users(), [](User *U) { return isa<PHINode>(U); }))
+    return tryToBuildSplitExtUsesPlan(Ext);
+
+  SourcePromoteGraph PromG;
+  PromG.Ext = Ext;
+  PromG.Source = Ext->getOperand(0);
+  PromG.SrcWidth = SrcWidth;
+  PromG.DstWidth = DstWidth;
+  bool GraphBuilt = buildSourcePromoteGraph(Ext, PromG);
+
+  if (!GraphBuilt) {
+    if (ORE) {
+      ORE->emit([&]() {
+        const auto &Reject = PromG.Reject;
+        OptimizationRemarkMissed R(DEBUG_TYPE, "SourcePromoteRejectd", Ext);
+        R << "cannot promote i " << ore::NV("SrcWidth", SrcWidth) << " to i "
+          << ore::NV("DstWidth", DstWidth) << ore::NV("Reason", Reject.Reason);
+
+        if (Reject.V)
+          R << "; value: " << ore::NV("Value", Reject.V);
+
+        if (Reject.User)
+          R << "; user: " << ore::NV("User", Reject.User);
+
+        return R;
+      });
+    }
+
+    if (auto Plan = tryToBuildSplitExtUsesPlan(Ext))
+      return Plan;
+
+    return std::nullopt;
+  }
+
+  auto IgnoreCoveredExts = [&](const ExtRewritePlan &Plan) {
+    for (Instruction *I : Plan.ExtsToReplaceWithOperand) {
+      CastInst *CI = cast<CastInst>(I);
+      if (CI->getSrcTy() == Ext->getSrcTy() &&
+          CI->getDestTy() == Ext->getDestTy() &&
+          CI->getOpcode() == Ext->getOpcode()) {
+        CoveredExts.insert(CI);
+      }
+    }
+  };
+
+  if (auto Plan = buildSequencePlan(PromG, Ext)) {
+    IgnoreCoveredExts(*Plan);
+    return Plan;
+  }
+
+  if (auto Plan = tryToBuildSplitExtUsesPlan(Ext)) {
+    IgnoreCoveredExts(*Plan);
+    return Plan;
+  }
+
+  return std::nullopt;
+}
+
+// NOTE: Narrowing preserves low-bit values, but may invalidate poison flags
+// The Rebuilder must drop nuw/nsw/exact on narrowed graph nodes.
+std::optional<ExtRewritePlan> ExtRewritePlanner::analyze(Instruction *I) {
+  if (auto *ICmp = dyn_cast<ICmpInst>(I)) {
+    return analyzeICmpRoot(ICmp);
+  }
+  if (auto *Trunc = dyn_cast<TruncInst>(I)) {
+    return analyzeTrunc(Trunc);
+  }
+  return analyzeExt(cast<CastInst>(I));
+}
+
+namespace {
+
+// This struct helps us when we are doing the rewriting of the IR
+// It is used in the Rebuilder class.
+struct GraphRewriteContext {
+public:
+  GraphRewriteContext(const ExtRewritePlan &Plan) : Plan(Plan) {}
+
+  Instruction *Ext = nullptr;
+  IntegerFillType Fill = IntegerFillType::UNDEFINED;
+  const ExtRewritePlan &Plan;
+  Type *NewTy = nullptr;
+
+  // Map old Values to the new values.
+  DenseMap<Value *, Value *> OldToNew;
+};
+
+/// @brief
+/// Rewrite widening/narrowing plans and mark
+/// unused instructions for removal.
+class Rebuilder {
+public:
+  Rebuilder(
+      const DenseMap<Value *, SmallVector<WideningIntegerSolutionInfo *, 8>>
+          &AllSols,
+      Module &M, const DataLayout *DL, DominatorTree *DT, AssumptionCache *AC)
+      : AvailableSolutions(AllSols), Ctx(M.getContext()), DL(DL), DT(DT),
+        AC(AC), Builder(M) {}
+
+  bool applyPlan(Instruction *Instr, const ExtRewritePlan &Plan);
+  bool eraseMarkedInstructions();
+
+private:
+  const DenseMap<Value *, SmallVector<WideningIntegerSolutionInfo *, 8>>
+      &AvailableSolutions;
+  LLVMContext &Ctx;
+  const DataLayout *DL;
+  DominatorTree *DT;
+  AssumptionCache *AC;
+  IRBuilder<> Builder;
+
+  // Instructions that are proved to be redundant and can be removed.
+  SmallPtrSet<Instruction *, 8> InstsToRemove;
+
+  // --- Fuctions for the narrow graph plan.
+
+  // Check if we can apply the NarrowGraphPlan.
+  bool canApplyNarrowGraphPlan(CastInst *Instr, const ExtRewritePlan &Plan);
+
+  // Apply the Narrow graph plan starting from the cast Instruction
+  // named Instr.
+  bool applyNarrowGraphPlan(CastInst *Instr, const ExtRewritePlan &Plan);
+
+  // For V get the narrow Value that we need depending on the Ctx.
+  Value *getNarrowValue(Value *V, GraphRewriteContext &Ctx);
+
+  // Create a narrow constant for C depending on the Ctx.
+  Value *createNarrowConstant(ConstantInt *C, GraphRewriteContext &Ctx);
+
+  // --- Functions for wide graph plan
+
+  // Plans are collect before rewriting starts.
+  // Applying an earlier plan can sometimes a plan can rewrite IR
+  // referenced by a later plan. So, check that before applying the plan.
+  bool canApplyWideGraphPlan(Instruction *Instr, const ExtRewritePlan &Plan);
+
+  // Check if we can form V to a Wide Width mentioned in ExtRewritePlan.
+  bool canGetWidePlanValue(Value *V, Instruction *Cast,
+                           const ExtRewritePlan &Plan);
+
+  // Apply the wide graph plan, promoting relevant instructions
+  // in the ExtRewritePlan.
+  bool applyWideGraphPlan(Instruction *Instr, const ExtRewritePlan &Plan);
+
+  // Try to get the Wide Value for V, relevant to the Ctx, with an
+  // apppopriate fillType OpFill.
+  Value *getWideValue(Value *V, GraphRewriteContext &Ctx,
+                      IntegerFillType OpFill);
+
+  // Create a wide constant for C, relevant to the Ctx, with an
+  // appropriate fillType RequiredFill.
+  Value *createWideConstant(ConstantInt *C, GraphRewriteContext &Ctx,
+                            IntegerFillType RequiredFill);
+
+  // When we have a ZExt Cast Instruction and the graph fill is
+  // Sign for some reason, we need to insert a mask to zero fill
+  // the upper bits if those are not proved zero.
+  Value *repairSourcePromoteSignedZExt(Value *WideV, CastInst *Ext,
+                                       GraphRewriteContext &Ctx);
+
+  // --- Functions for the trunc plan
+
+  // Create a repair if possible for each extension
+  // because widening preserves the low bits but the upper bits
+  // may differ from what the Exit extension produced,
+  // So that restores that difference using shifts or mask.
+  Value *createTruncRootExitRepair(Value *WideV, CastInst *Exit,
+                                   GraphRewriteContext &Ctx);
+  // Similar function to check if can apply the trunc plan or if anything
+  // has alredy changed.
+  bool canApplyTruncRootPlan(CastInst *Trunc, const ExtRewritePlan &Plan);
+
+  // Apply the truncRootPlan, promoting instructions that allows us to drop
+  // a truncation and possible some extensions too.
+  bool applyTruncRootPlan(CastInst *Trunc, const ExtRewritePlan &Plan);
+
+  // Try to get the Wide Value for V relevant to the Ctx, for the
+  // truncRoot Plan.
+  Value *getTruncRootWideValue(Value *V, GraphRewriteContext &Ctx);
+
+  // Get the required fill for V, relevant to the Ctx.
+  IntegerFillType getRequiredFillForWideValue(Value *V,
+                                              GraphRewriteContext &Ctx);
+
+  // Get the required fill for U, relevant to the Ctx.
+  IntegerFillType getRequiredFillForWideUse(Use *U, GraphRewriteContext &Ctx);
+
+  // Apply a plan that gives different extension representations to different users.
+  bool applySplitExtUses(CastInst *Ext, const ExtRewritePlan &Plan);
+};
+
+} // end anonymous namespace
+
+// NOTE: Keep this in sync with tryToAddNarrowGraphNode's accepted operand
+// cases.
+Value *Rebuilder::getNarrowValue(Value *V, GraphRewriteContext &NarrowCtx) {
+  if (NarrowCtx.OldToNew.contains(V)) {
+    return NarrowCtx.OldToNew[V];
+  }
+  if (V == NarrowCtx.Ext) {
+    // Op of Ext is already narrowed.
+    return NarrowCtx.Ext->getOperand(0);
+  }
+  if (V == NarrowCtx.Ext->getOperand(0)) {
+    // Op of Ext is already Narrowed
+    return V;
+  }
+  if (auto *CI = dyn_cast<ConstantInt>(V)) {
+    return createNarrowConstant(CI, NarrowCtx);
+  }
+
+  // This can break if we support vector types.
+  if (V->getType() == NarrowCtx.NewTy) {
+    // NewTy is the narrow type, so we can just return V.
+    return V;
+  }
+
+  auto I = dyn_cast<Instruction>(V);
+  if (I && NarrowCtx.Plan.InstsToNarrow.contains(I)) {
+    // We have proved that we can narrow I, so we can just return it here.
+    return I;
+  }
+
+  if (I && NarrowCtx.Plan.InstsToReplaceWithOperand.contains(I)) {
+    // Op0 of the cast is already narrow. We have proved in
+    // canApplyNarrowGraphPlan that this I, is an extension
+    // so we can from the narrow value by just returing the Op0.
+    return cast<CastInst>(I)->getOperand(0);
+  }
+
+  return nullptr;
+}
+
+Value *Rebuilder::createNarrowConstant(ConstantInt *C,
+                                       GraphRewriteContext &Ctx) {
+  auto NarrowWidth = Ctx.NewTy->getIntegerBitWidth();
+  return ConstantInt::get(Ctx.NewTy, C->getValue().trunc(NarrowWidth));
+}
+
+bool Rebuilder::canApplyNarrowGraphPlan(CastInst *Ext,
+                                        const ExtRewritePlan &Plan) {
+  Type *NarrowTy = IntegerType::getIntNTy(Ctx, Plan.NarrowWidth);
+
+  // if we cannot get a narrow val, we cannot apply the plan.
+  auto CanGetNarrowVal = [&](Value *V) {
+    if (V == Ext || V == Ext->getOperand(0) || isa<ConstantInt>(V))
+      return true;
+
+    if (V->getType() == NarrowTy)
+      return true;
+
+    auto *I = dyn_cast<Instruction>(V);
+    return I && (Plan.InstsToNarrow.contains(I) ||
+                 Plan.InstsToReplaceWithOperand.contains(I));
+  };
+
+  if (InstsToRemove.contains(Ext))
+    return false;
+
+  // If anything has changed, cause of overlapping plans
+  // we cannot apply the plans.
+  if (Ext->getSrcTy()->getScalarSizeInBits() != Plan.NarrowWidth)
+    return false;
+
+  if (Ext->getDestTy()->getScalarSizeInBits() != Plan.WideWidth)
+    return false;
+
+  // Validate the casts and ensure the op of the cast
+  // doesn't have it's type changed during the rewrite
+  for (Instruction *I : Plan.InstsToReplaceWithOperand) {
+    auto *CI = dyn_cast<CastInst>(I);
+    if (!CI || (!isa<SExtInst>(CI) && !isa<ZExtInst>(CI)) ||
+        InstsToRemove.contains(I) || Plan.InstsToNarrow.contains(I) ||
+        CI->getSrcTy() != NarrowTy ||
+        !CI->getDestTy()->isIntegerTy(Plan.WideWidth) ||
+        CI->getOpcode() != Ext->getOpcode())
+      return false;
+    if (auto *SrcI = dyn_cast<Instruction>(CI->getOperand(0))) {
+      if (InstsToRemove.contains(SrcI) || Plan.InstsToNarrow.contains(SrcI))
+        return false;
+    }
+  }
+
+  for (Instruction *I : Plan.InstsToNarrow) {
+    if (InstsToRemove.contains(I))
+      return false;
+
+    // We don't narrow sext/zext instructions.
+    if (isExtOpcode(I))
+      return false;
+
+    // If the type has changed by another plan, we cannot apply
+    // the narrow plan.
+    if (I->getType()->getScalarSizeInBits() != Plan.WideWidth)
+      return false;
+
+    for (auto [OpIdx, OpUse] : enumerate(I->operands())) {
+
+      // validate only operands whose type changes,
+      // a select's condition remains i1.
+      if (!isWidenedOp(OpUse))
+        continue;
+
+      if (!CanGetNarrowVal(OpUse.get()))
+        return false;
+    }
+  }
+
+  for (const BoundaryRewrite &Rewrite : Plan.BoundaryRewrites) {
+    if (!Rewrite.ExtUse || !Rewrite.User || !Rewrite.ResultTy)
+      return false;
+
+    if (InstsToRemove.contains(Rewrite.User))
+      return false;
+
+    switch (Rewrite.Kind) {
+    case BoundaryRewriteKind::ReplaceWithSource:
+    case BoundaryRewriteKind::TruncSource: {
+      // we must get the NarrowVal for %x
+      if (!CanGetNarrowVal(Rewrite.ExtUse->get()))
+        return false;
+      break;
+    }
+    case BoundaryRewriteKind::ExtSource: {
+      // if another rewrite changed the IR we cannot continue.
+      if (Rewrite.ExtUse->get() != Ext)
+        return false;
+      break;
+    }
+    case BoundaryRewriteKind::NarrowICmp: {
+      auto *ICmp = dyn_cast<ICmpInst>(Rewrite.User);
+      if (!ICmp)
+        return false;
+      // To narrow the icmp we need to narrow both operands
+      // of the icmp.
+      if (!CanGetNarrowVal(ICmp->getOperand(0)) ||
+          !CanGetNarrowVal(ICmp->getOperand(1)))
+        return false;
+      break;
+    }
+    case BoundaryRewriteKind::RepairNarrowValue: {
+      // Only supported by wide graph plans.
+      return false;
+    } break;
+    }
+  }
+  return true;
+}
+
+bool Rebuilder::applyNarrowGraphPlan(CastInst *Ext,
+                                     const ExtRewritePlan &Plan) {
+
+  if (!canApplyNarrowGraphPlan(Ext, Plan))
+    return false;
+
+  GraphRewriteContext NarrowCtx(Plan);
+  NarrowCtx.Ext = Ext;
+  NarrowCtx.NewTy = Ext->getSrcTy();
+  NarrowCtx.Fill = Ext->getOpcode() == Instruction::SExt ? SIGN : ZEROS;
+
+  unsigned NarrowWidth = Plan.NarrowWidth;
+  auto NarrowType = Type::getIntNTy(Ctx, NarrowWidth);
+  for (auto *I : Plan.InstsToNarrow) {
+    assert(!isExtOpcode(I) &&
+           "inner extensions are not supported in narrow graph yet");
+    // Extensions apart from Ext, are not part of the graph nodes yet.
+    // When they are needed they need specific rewriting.
+    I->mutateType(NarrowType);
+  }
+
+  for (auto *I : Plan.InstsToNarrow) {
+    for (auto [OpIdx, OpUse] : enumerate(I->operands())) {
+
+      if (I->getOpcode() == Instruction::Select && OpIdx == 0)
+        continue;
+
+      Value *NarrowOp = getNarrowValue(OpUse.get(), NarrowCtx);
+      assert(NarrowOp && "narrow graph plan has an unsupported operand");
+
+      OpUse.set(NarrowOp);
+    }
+    // After narrowing all flags must be dropped
+    // check if we can maybe preserve exact.
+    // TODO: try to reconstruct the flags
+    I->dropPoisonGeneratingAnnotations();
+  }
+
+  for (const auto &Rewrite : Plan.BoundaryRewrites) {
+    Instruction *BoundaryI = Rewrite.User;
+    Builder.SetInsertPoint(BoundaryI);
+    Builder.SetCurrentDebugLocation(BoundaryI->getDebugLoc());
+
+    Value *OldInput = Rewrite.ExtUse->get();
+
+    auto Kind = Rewrite.Kind;
+    Value *Replacement = nullptr;
+    switch (Kind) {
+    case BoundaryRewriteKind::ReplaceWithSource: {
+      // Just get the narrowValue for the op0 of the cast.
+      Replacement = getNarrowValue(OldInput, NarrowCtx);
+      assert(Replacement && "narrow graph plan has an unsupported operand");
+      assert(Replacement->getType() == Rewrite.ResultTy &&
+             "Replace with Source must produce the boundary result type");
+      break;
+    }
+    case BoundaryRewriteKind::TruncSource: {
+      // We must get a narrow input for the replacement truncation.
+      // Now it starts with the narrowType.
+      Value *NarrowInp = getNarrowValue(OldInput, NarrowCtx);
+      assert(NarrowInp && "narrow graph plan has an unsupported operand");
+
+      Replacement = Builder.CreateTrunc(NarrowInp, Rewrite.ResultTy);
+      break;
+    }
+    case BoundaryRewriteKind::ExtSource: {
+      assert(OldInput == Ext && "ExtSource is only valid for direct ext users");
+      Value *Src = Ext->getOperand(0);
+      // Extend the original source directly to the boundary result ty.
+      if (isa<ZExtInst>(Ext)) {
+        Replacement = Builder.CreateZExt(Src, Rewrite.ResultTy);
+      } else if (isa<SExtInst>(Ext)) {
+        Replacement = Builder.CreateSExt(Src, Rewrite.ResultTy);
+      } else {
+        return false;
+      }
+      break;
+    }
+    case BoundaryRewriteKind::NarrowICmp: {
+      ICmpInst *ICmpI = cast<ICmpInst>(Rewrite.User);
+      Value *NarrowOp0 = getNarrowValue(ICmpI->getOperand(0), NarrowCtx);
+      Value *NarrowOp1 = getNarrowValue(ICmpI->getOperand(1), NarrowCtx);
+      Replacement =
+          Builder.CreateICmp(ICmpI->getPredicate(), NarrowOp0, NarrowOp1);
+      break;
+    }
+    case BoundaryRewriteKind::RepairNarrowValue: {
+      llvm_unreachable(
+          "RepairNarrowValue should rejected for narrow graph plans.");
+    }
+    }
+
+    // Move boundary's users to its replacement
+    // and defer deletion until all plans have been applied.
+    BoundaryI->replaceAllUsesWith(Replacement);
+    InstsToRemove.insert(BoundaryI);
+  }
+
+  // If we managed to place cast insts here
+  // They will be replaced by their operands if they have
+  // no other active uses.
+  for (Instruction *I : Plan.InstsToReplaceWithOperand) {
+    if (I->use_empty())
+      InstsToRemove.insert(I);
+  }
+
+  if (Ext->use_empty()) {
+    InstsToRemove.insert(Ext);
+  }
+  return true;
+}
+
+Value *Rebuilder::getTruncRootWideValue(Value *V, GraphRewriteContext &Ctx) {
+  if (V == Ctx.Ext) {
+    // At this point Op0 has already the wide type we are building toward.
+    return Ctx.Ext->getOperand(0);
+  }
+
+  if (auto *C = dyn_cast<ConstantInt>(V)) {
+    // Widen constants relevant to the Ctx FillType.
+    unsigned WideWidth = Ctx.Plan.WideWidth;
+    if (Ctx.Fill == ZEROS)
+      return ConstantInt::get(Ctx.NewTy, C->getValue().zext(WideWidth));
+
+    assert(Ctx.Fill == SIGN && "unexpected trunc-root fill for constant");
+    return ConstantInt::get(Ctx.NewTy, C->getValue().sext(WideWidth));
+  }
+
+  if (V->getType() == Ctx.NewTy)
+    return V;
+
+  // If we have proved we can promote we can just return I
+  // It will be widened or it's already widened
+  if (auto *I = dyn_cast<Instruction>(V)) {
+    if (Ctx.Plan.InstsToPromote.contains(I))
+      return I;
+  }
+  // As a fallback, create casts relevant to the Ctx Fill
+  if (V->getType()->isIntegerTy(Ctx.Plan.NarrowWidth)) {
+    if (Ctx.Fill == SIGN)
+      return Builder.CreateSExt(V, Ctx.NewTy);
+
+    assert(Ctx.Fill == ZEROS && "unexpected trunc-root fill for external node");
+    return Builder.CreateZExt(V, Ctx.NewTy);
+  }
+  return nullptr;
+}
+
+Value *Rebuilder::createTruncRootExitRepair(Value *WideV, CastInst *Exit,
+                                            GraphRewriteContext &Ctx) {
+  Type *ExitTy = Exit->getDestTy();
+  unsigned ExitWidth = ExitTy->getScalarSizeInBits();
+  unsigned NarrowWidth = Ctx.Plan.NarrowWidth;
+  Value *Repair = nullptr;
+
+  Value *ExitV = WideV;
+  // The WideV may be wider than ExitTy, so, in that case we narrow.
+  if (WideV->getType() != ExitTy)
+    ExitV = Builder.CreateTrunc(WideV, ExitTy);
+
+  SimplifyQuery SQ(*DL, DT, AC, Exit);
+  if (auto *ZExt = dyn_cast<ZExtInst>(Exit)) {
+    // Zext with nneg and CtxFill == SIGN can we just return ExitV
+    // the upper bits are fine.
+    if (ZExt->hasNonNeg() && Ctx.Fill == SIGN)
+      return ExitV;
+
+    // Enough sign bits make the upper bits copies of the narrow sign bit.
+    // NoNeg guarantess that bit is zero, so no zero-fill repair is needed.
+    if (ZExt->hasNonNeg() &&
+        ComputeNumSignBits(ExitV, *DL, AC, Exit, DT) > ExitWidth - NarrowWidth)
+      return ExitV;
+
+    APInt HighMask = APInt::getHighBitsSet(ExitWidth, ExitWidth - NarrowWidth);
+    // If the mask is proved to be zero no zero-fill repair is needed.
+    if (MaskedValueIsZero(ExitV, HighMask, SQ))
+      return ExitV;
+
+    APInt LowMask = APInt::getLowBitsSet(ExitWidth, NarrowWidth);
+    Repair = Builder.CreateAnd(ExitV, ConstantInt::get(ExitTy, LowMask));
+  } else if (isa<SExtInst>(Exit)) {
+    // Enough sign bits make the upper bits copies of the narrow sig bit.
+    // So, no sign-fill repair is needed.
+    if (ComputeNumSignBits(ExitV, *DL, AC, Exit, DT) > ExitWidth - NarrowWidth)
+      return ExitV;
+
+    unsigned ShiftAmt = ExitWidth - NarrowWidth;
+    // Sign extend the low NarrowWidth bits.
+    Value *ShiftCnst = ConstantInt::get(ExitTy, ShiftAmt);
+    Repair = Builder.CreateAShr(Builder.CreateShl(ExitV, ShiftCnst), ShiftCnst);
+  } else {
+    llvm_unreachable("didn't find cast to apply narrow trunc");
+  }
+  return Repair;
+}
+
+bool Rebuilder::canApplyTruncRootPlan(CastInst *Trunc,
+                                      const ExtRewritePlan &Plan) {
+  Type *WideType = IntegerType::getIntNTy(Ctx, Plan.WideWidth);
+
+  // If we cannot get a wide value for the trunc root plan
+  // we cannot apply it.
+  auto CanGetWideValue = [&](Value *V) {
+    if (V == Trunc || isa<ConstantInt>(V))
+      return true;
+
+    if (V->getType() == WideType)
+      return true;
+
+    if (auto *I = dyn_cast<Instruction>(V)) {
+      if (Plan.InstsToPromote.contains(I))
+        return true;
+    }
+    // we can insert an extension if it's an external
+    // instruction outside of InstsToPromote.
+    if (V->getType()->isIntegerTy(Plan.NarrowWidth))
+      return true;
+
+    return false;
+  };
+
+  // Check if an earlier rewrite already scheduled trunk for deletion.
+  if (InstsToRemove.contains(Trunc))
+    return false;
+
+  // Check if the trunc src type has changed for some reason.
+  if (Trunc->getSrcTy()->getScalarSizeInBits() != Plan.WideWidth)
+    return false;
+
+  if (Trunc->getDestTy()->getScalarSizeInBits() != Plan.NarrowWidth)
+    return false;
+
+  for (Instruction *I : Plan.InstsToPromote) {
+    for (auto &Op : I->operands()) {
+      if (!isWidenedOp(Op))
+        continue;
+
+      if (!CanGetWideValue(Op))
+        return false;
+    }
+  }
+  for (CastInst *Exit : Plan.TruncRootExits) {
+    if (!isa<ZExtInst>(Exit) && !isa<SExtInst>(Exit))
+      return false;
+    // We need the wide value to replace the extension.
+    // Otherwise we cannot build the plan.
+    if (!CanGetWideValue(Exit->getOperand(0)))
+      return false;
+  }
+  return true;
+}
+
+bool Rebuilder::applyTruncRootPlan(CastInst *Trunc,
+                                   const ExtRewritePlan &Plan) {
+
+  if (!canApplyTruncRootPlan(Trunc, Plan))
+    return false;
+
+  Type *WideType = IntegerType::getIntNTy(Ctx, Plan.WideWidth);
+  GraphRewriteContext TruncCtx(Plan);
+  TruncCtx.Ext = Trunc;
+  TruncCtx.NewTy = WideType;
+  TruncCtx.Fill = Plan.TruncRootFill;
+
+  // We have proven it's safe to mutate to WideTy.
+  for (auto *I : Plan.InstsToPromote) {
+    I->mutateType(WideType);
+  }
+
+  for (auto *I : Plan.InstsToPromote) {
+    Builder.SetInsertPoint(I);
+    Builder.SetCurrentDebugLocation(I->getDebugLoc());
+
+    for (auto [OpIdx, OpUse] : enumerate(I->operands())) {
+      if (I->getOpcode() == Instruction::Select && OpIdx == 0)
+        continue;
+
+      Value *WideOp = getTruncRootWideValue(OpUse.get(), TruncCtx);
+
+      assert(WideOp && "wide graph plan has an unsupported operand");
+
+      assert(WideOp->getType() == WideType &&
+             "trunc-root exit operand was not widened to the plan wide type.");
+
+      OpUse.set(WideOp);
+    }
+
+    bool PreserveNSW = false;
+
+    if (auto *BO = dyn_cast<OverflowingBinaryOperator>(I))
+      PreserveNSW = TruncCtx.Fill == SIGN && BO->hasNoSignedWrap();
+
+    I->dropPoisonGeneratingFlags();
+    if (PreserveNSW) {
+      cast<BinaryOperator>(I)->setHasNoSignedWrap();
+    }
+  }
+
+  for (auto Exit : Plan.TruncRootExits) {
+    Builder.SetInsertPoint(Exit);
+    Builder.SetCurrentDebugLocation(Exit->getDebugLoc());
+
+    Value *WideV = getTruncRootWideValue(Exit->getOperand(0), TruncCtx);
+    assert(WideV && "wide graph plan has an unsupported exit operand");
+
+    assert(WideV->getType() == WideType &&
+           "trunc root exit operand was not widened to plan wide type.");
+    // We must be sure that the upper bits remain the same without the
+    // extension.
+    Value *Repair = createTruncRootExitRepair(WideV, Exit, TruncCtx);
+    Exit->replaceAllUsesWith(Repair);
+
+    // Because we mutate the operand of the cast,
+    // the dead sext/zext can become temporarily ill typed, do not allow that.
+    Type *OldSrcTy = IntegerType::getIntNTy(Ctx, Plan.NarrowWidth);
+    Exit->setOperand(0, PoisonValue::get(OldSrcTy));
+  }
+
+  for (Instruction *I : Plan.InstsToRemove)
+    InstsToRemove.insert(I);
+
+  return true;
+}
+
+Value *Rebuilder::getWideValue(Value *V, GraphRewriteContext &Ctx,
+                               IntegerFillType RequiredFill) {
+
+  auto CreateExt = [&](Value *Op, IntegerFillType Fill) -> Value * {
+    if (Fill == SIGN) {
+      return Builder.CreateSExt(Op, Ctx.NewTy);
+    } else if (Fill == ZEROS) {
+      auto *Ext = Ctx.Ext;
+      bool HasNoNeg = Ext && isa<ZExtInst>(Ext) &&
+                      cast<ZExtInst>(Ext)->hasNonNeg() &&
+                      Op == Ext->getOperand(0);
+      return Builder.CreateZExt(Op, Ctx.NewTy, "", HasNoNeg);
+    }
+    return nullptr;
+  };
+
+  bool ToExtend = Ctx.Plan.LoadsToExtend.contains(V) ||
+                  Ctx.Plan.ExternalOpsToExtend.contains(V);
+
+  // We already have the new wide value, so we can just return it.
+  if (!ToExtend && Ctx.OldToNew.contains(V))
+    return Ctx.OldToNew[V];
+
+  // If this is the ext we will drop, return the wide value
+  // of the op0.
+  if (V == Ctx.Ext && isa<CastInst>(V))
+    return getWideValue(Ctx.Ext->getOperand(0), Ctx, Ctx.Fill);
+
+  auto LoadExtIt = Ctx.Plan.LoadsToExtend.find(V);
+  if (LoadExtIt != Ctx.Plan.LoadsToExtend.end()) {
+    auto Fill = LoadExtIt->second;
+    Value *WideV = CreateExt(V, Fill);
+    return WideV;
+  }
+
+  auto ExtOpIt = Ctx.Plan.ExternalOpsToExtend.find(V);
+  if (ExtOpIt != Ctx.Plan.ExternalOpsToExtend.end()) {
+    auto Fill = ExtOpIt->second;
+    Value *WideV = CreateExt(V, Fill);
+    return WideV;
+  }
+
+  if (Ctx.Plan.WideLeaves.contains(V))
+    return V;
+
+  if (auto *CI = dyn_cast<ConstantInt>(V))
+    return createWideConstant(CI, Ctx, RequiredFill);
+
+  auto I = dyn_cast<Instruction>(V);
+  if (I && Ctx.Plan.InstsToReplaceWithOperand.contains(I)) {
+    IntegerFillType OpFill = RequiredFill;
+    // Widen the operand according the removed cast fillType.
+    if (isa<ZExtInst>(I))
+      OpFill = ZEROS;
+    else if (isa<SExtInst>(I))
+      OpFill = SIGN;
+    return getWideValue(I->getOperand(0), Ctx, OpFill);
+  }
+  // Note this can break if we support vector types.
+  if (V->getType() == Ctx.NewTy)
+    return V;
+
+  if (I && isa<ICmpInst>(I) && Ctx.Plan.InstsToPromote.contains(I)) {
+    if (RequiredFill == SIGN) {
+      return Builder.CreateSExt(I, Ctx.NewTy);
+    } else if (RequiredFill == ZEROS || RequiredFill == ANYTHING) {
+      return Builder.CreateZExt(I, Ctx.NewTy);
+    }
+    return nullptr;
+  }
+
+  if (I && Ctx.Plan.InstsToPromote.contains(I)) {
+    // It will be promoted to WideTy.
+    return I;
+  }
+  return nullptr;
+}
+
+Value *Rebuilder::createWideConstant(ConstantInt *C, GraphRewriteContext &Ctx,
+                                     IntegerFillType Fill) {
+  auto WideWidth = Ctx.NewTy->getIntegerBitWidth();
+
+  if (Fill == ANYTHING)
+    Fill = C->isNegative() ? SIGN : ZEROS;
+
+  if (Fill == SIGN)
+    return ConstantInt::get(Ctx.NewTy, C->getValue().sext(WideWidth));
+
+  assert(Fill == ZEROS && " cannot widen constant with invalid fill");
+  return ConstantInt::get(Ctx.NewTy, C->getValue().zext(WideWidth));
+}
+
+Value *Rebuilder::repairSourcePromoteSignedZExt(Value *WideV, CastInst *Ext,
+                                                GraphRewriteContext &Ctx) {
+  auto *ZExt = dyn_cast<ZExtInst>(Ext);
+  if (!ZExt)
+    return WideV;
+
+  if (Ctx.Fill == ZEROS)
+    return WideV;
+
+  // We can avoid a repair on certain ICmps if we can use SIGN fill.
+  if (!Ctx.Plan.NeedsSourcePromoteZExtRepair && Ctx.Fill == SIGN) {
+    if (ZExt->hasNonNeg())
+      return WideV;
+
+    if (auto *ICmp = getSignFillICmp(ZExt, Ctx.Plan.NarrowWidth)) {
+      // We cannot guarantee samesign if we use a SExt instead of a ZExt.
+      ICmp->setSameSign(false);
+      return WideV;
+    }
+
+    if (canUseSignFillForGEP(ZExt, Ctx.Plan.NarrowWidth, *DL))
+      return WideV;
+  }
+
+  unsigned SrcWidth = Ctx.Plan.NarrowWidth;
+  unsigned DstWidth = Ctx.Plan.WideWidth;
+
+  APInt HighMask = APInt::getHighBitsSet(DstWidth, DstWidth - SrcWidth);
+  SimplifyQuery SQ(*DL, DT, AC, Ext);
+
+  if (MaskedValueIsZero(WideV, HighMask, SQ))
+    return WideV;
+  // Insert a Mask to the preserve zero on the upper bits
+  APInt LowMask = APInt::getLowBitsSet(DstWidth, SrcWidth);
+  return Builder.CreateAnd(WideV, ConstantInt::get(Ctx.NewTy, LowMask));
+}
+
+bool Rebuilder::canGetWidePlanValue(Value *V, Instruction *Cast,
+                                    const ExtRewritePlan &Plan) {
+
+  if (!V)
+    return false;
+
+  auto *I = dyn_cast<Instruction>(V);
+
+  if (I && InstsToRemove.contains(I))
+    return false;
+
+  if (I && Plan.InstsToReplaceWithOperand.contains(I)) {
+    // if we want to replace the cast, we must get the wide value
+    // from the operand of the cast.
+    return canGetWidePlanValue(I->getOperand(0), Cast, Plan);
+  }
+
+  if (V == Plan.TruncToReplaceWithAShr) {
+    auto *Shift = dyn_cast<BinaryOperator>(I->getOperand(0));
+    // Reject a shift already consumed by an earlier plan.
+    return Shift && Shift->getOpcode() == Instruction::LShr &&
+           !InstsToRemove.contains(Shift) &&
+           Shift->getType()->isIntegerTy(Plan.WideWidth);
+  }
+
+  Type *WideType = IntegerType::getIntNTy(Ctx, Plan.WideWidth);
+
+  // For completeness
+  if (V == Cast && isa<CastInst>(Cast))
+    return canGetWidePlanValue(Cast->getOperand(0), Cast, Plan);
+
+  if (V->getType() == WideType)
+    return true;
+
+  unsigned Width = V->getType()->getIntegerBitWidth();
+  // To extend we should start from a smaller width than WideWidth.
+  if (Plan.LoadsToExtend.contains(V) || Plan.ExternalOpsToExtend.contains(V))
+    return Width <= Plan.WideWidth;
+
+  if (Plan.WideLeaves.contains(V))
+    return Width == Plan.WideWidth;
+
+  // PromotedInsts will end up at the WideWidth ty.
+  if (I && Plan.InstsToPromote.contains(I))
+    return Width <= Plan.WideWidth;
+
+  if (auto *C = dyn_cast<ConstantInt>(V))
+    return C->getBitWidth() <= Plan.WideWidth;
+
+  return false;
+};
+
+IntegerFillType Rebuilder::getRequiredFillForWideUse(Use *U,
+                                                     GraphRewriteContext &Ctx) {
+  auto It = Ctx.Plan.RequiredOperandFill.find(U);
+  if (It != Ctx.Plan.RequiredOperandFill.end())
+    return It->second;
+  return getRequiredFillForWideValue(U->get(), Ctx);
+}
+
+IntegerFillType
+Rebuilder::getRequiredFillForWideValue(Value *V, GraphRewriteContext &Ctx) {
+  auto It = Ctx.Plan.RequiredFill.find(V);
+  if (It != Ctx.Plan.RequiredFill.end())
+    return It->second;
+  return Ctx.Fill;
+}
+
+bool Rebuilder::applySplitExtUses(CastInst *Ext, const ExtRewritePlan &Plan) {
+
+  auto *ZExt = dyn_cast<ZExtInst>(Ext);
+
+  if (!ZExt || InstsToRemove.contains(Ext))
+    return false;
+
+  auto *Src = ZExt->getOperand(0);
+  if (Src != Plan.Source || !ZExt->getSrcTy()->isIntegerTy(Plan.NarrowWidth) ||
+      !ZExt->getDestTy()->isIntegerTy(Plan.WideWidth))
+    return false;
+
+  if (auto *SrcI = dyn_cast<Instruction>(Src))
+    if (InstsToRemove.contains(SrcI))
+      return false;
+
+  auto SrcWidth = Plan.NarrowWidth;
+  Builder.SetInsertPoint(Ext);
+  Builder.SetCurrentDebugLocation(Ext->getDebugLoc());
+  SmallPtrSet<Use *, 8> SignExtUses;
+
+  for (auto &U : Ext->uses()) {
+    if (canUseSignFillForICmpUse(U, SrcWidth))
+      SignExtUses.insert(&U);
+  }
+
+  if (SignExtUses.empty())
+    return false;
+
+  auto SExt = Builder.CreateSExt(Ext->getOperand(0), Ext->getType());
+  for (Use *U : SignExtUses) {
+    auto *ICmp = dyn_cast<ICmpInst>(U->getUser());
+    if (!ICmp)
+      return false;
+    ICmp->setSameSign(false);
+    U->set(SExt);
+  }
+
+  return true;
+}
+
+bool Rebuilder::canApplyWideGraphPlan(Instruction *Ext,
+                                      const ExtRewritePlan &Plan) {
+  if (!Plan.Source || InstsToRemove.contains(Ext) ||
+      !Plan.Source->getType()->isIntegerTy(Plan.NarrowWidth))
+    return false;
+
+  if (!canGetWidePlanValue(Plan.Source, Ext, Plan))
+    return false;
+
+  auto *CI = dyn_cast<CastInst>(Ext);
+  if (CI && CI->getOperand(0) != Plan.Source)
+    return false;
+
+  if (auto *Trunc = Plan.TruncToReplaceWithAShr) {
+    if (InstsToRemove.contains(Trunc) ||
+        !Trunc->getType()->isIntegerTy(Plan.NarrowWidth) ||
+        !Trunc->getSrcTy()->isIntegerTy(Plan.WideWidth))
+      return false;
+
+    auto MatchInfo = matchAndProveSignedClamp(Trunc, *DL);
+    if (!MatchInfo)
+      return false;
+
+    if (MatchInfo->High != Ext || MatchInfo->High != Plan.Source ||
+        InstsToRemove.contains(MatchInfo->Shift) ||
+        !llvm::is_contained(Plan.InstsToRemove, MatchInfo->Shift))
+      return false;
+
+    Instruction *Nodes[] = {MatchInfo->Add, MatchInfo->Low, MatchInfo->High};
+
+    for (Instruction *I : Nodes) {
+      if (InstsToRemove.contains(I) || !Plan.InstsToPromote.contains(I) ||
+          !I->getType()->isIntegerTy(Plan.NarrowWidth))
+        return false;
+    }
+  }
+
+  auto HandleUses = [&](Instruction *I) -> bool {
+    for (Use &U : I->uses()) {
+      // Check if something has been modified by an overlapping plan and bail.
+      // This is possible because we collect all of the plans first.
+      // And we do all the rewrites afterwards, selecting what is
+      // considered best by each plan. Solving them together is way more
+      // complex.
+      auto *UI = dyn_cast<Instruction>(U.getUser());
+      if (UI && !(Plan.InstsToPromote.contains(UI) && isWidenedOp(U)) &&
+          llvm::none_of(Plan.BoundaryRewrites,
+                        [&](const BoundaryRewrite &Rewrite) {
+                          return Rewrite.Kind == RepairNarrowValue &&
+                                 Rewrite.ExtUse == &U;
+                        }) &&
+          !((UI == Ext) && isa<CastInst>(Ext)) &&
+          !(Plan.ExtsToReplaceWithOperand.contains(UI)) &&
+          !(llvm::is_contained(Plan.InstsToRemove, UI)) &&
+          !(InstsToRemove.contains(UI)) &&
+          !(Plan.SafeWrap.contains(I) && isa<ICmpInst>(UI) &&
+            U.getOperandNo() == 0))
+        return false;
+    }
+    return true;
+  };
+
+  // Check if insts to promote have already been changed
+  for (const auto &I : Plan.InstsToPromote) {
+
+    for (auto &Op : I->operands()) {
+      if (!isWidenedOp(Op))
+        continue;
+
+      // Phi incoming extensions are inserted before the pred's
+      // terminator. An invoke produce its result only after
+      // leaving its block. Inserting the extension before
+      // will use that result before being defined.
+      if (auto *Phi = dyn_cast<PHINode>(I)) {
+        // Incoming extensions need an insertion point in the predecessor.
+        if (!Phi->getIncomingBlock(Op.getOperandNo())->hasInsertionPt())
+          return false;
+
+        // These results are unavailable before their defining terminator.
+        if (isa<InvokeInst, CallBrInst>(Op.get()) &&
+            !Op->getType()->isIntegerTy(Plan.WideWidth))
+          return false;
+      }
+
+      if (!canGetWidePlanValue(Op.get(), Ext, Plan))
+        return false;
+    }
+
+    if (!isa<ICmpInst>(I) && !HandleUses(I))
+      return false;
+  }
+
+  for (Instruction *I : Plan.InstsToReplaceWithOperand) {
+    if (InstsToRemove.contains(I) || !HandleUses(I))
+      return false;
+  }
+
+  // Similarly, check for any changes here and in the
+  // later loops.
+  for (const BoundaryRewrite &Rewrite : Plan.BoundaryRewrites) {
+    if (Rewrite.Kind != RepairNarrowValue)
+      continue;
+    if (!Rewrite.ExtUse || !Rewrite.User || !Rewrite.ResultTy)
+      return false;
+    if (!Rewrite.OriginalValue)
+      return false;
+    if (Rewrite.ExtUse->get() != Rewrite.OriginalValue)
+      return false;
+    if (!canGetWidePlanValue(Rewrite.OriginalValue, Ext, Plan))
+      return false;
+  }
+  for (auto I : Plan.ExtsToReplaceWithOperand) {
+    if (InstsToRemove.contains(I))
+      return false;
+
+    auto *CI = cast<CastInst>(I);
+    if (!CI->getDestTy()->isIntegerTy(Plan.WideWidth))
+      return false;
+
+    IntegerFillType OpFill =
+        Plan.RequiredFill.lookup_or(CI->getOperand(0), UNDEFINED);
+
+    if (auto *ZExt = dyn_cast<ZExtInst>(I);
+        ZExt && OpFill == SIGN && !ZExt->hasNonNeg()) {
+      SimplifyQuery SQ(*DL, DT, AC, ZExt);
+      if (!isKnownNonNegative(ZExt->getOperand(0), SQ) &&
+          !canUseSignFillForGEP(ZExt, Plan.NarrowWidth, *DL))
+        return false;
+    }
+
+    if (!canGetWidePlanValue(CI->getOperand(0), Ext, Plan))
+      return false;
+  }
+
+  for (Instruction *I : Plan.SafeWrap) {
+    if (!I || InstsToRemove.contains(I))
+      return false;
+
+    if (!Plan.InstsToPromote.contains(I))
+      return false;
+
+    if (!I->hasOneUse())
+      return false;
+
+    auto *ICmp = dyn_cast<ICmpInst>(*I->user_begin());
+    if (!ICmp || InstsToRemove.contains(ICmp))
+      return false;
+
+    APInt NewOpConstant;
+    APInt ICmpConstant;
+    if (!computeSignedICmpWrapConstants(I, ICmp, Plan.NarrowWidth,
+                                        Plan.WideWidth, NewOpConstant,
+                                        ICmpConstant))
+      return false;
+  }
+  return true;
+}
+
+bool Rebuilder::applyWideGraphPlan(Instruction *Ext,
+                                   const ExtRewritePlan &Plan) {
+
+  // Some other func may have already removed this ext.
+  if (!canApplyWideGraphPlan(Ext, Plan))
+    return false;
+
+  unsigned WideWidth = Plan.WideWidth;
+  auto WideType = Type::getIntNTy(Ctx, WideWidth);
+
+  GraphRewriteContext WideCtx(Plan);
+  WideCtx.Ext = Ext;
+  WideCtx.NewTy = WideType;
+  WideCtx.Fill = Plan.SourcePromoteFill;
+
+  if (auto *Trunc = Plan.TruncToReplaceWithAShr) {
+    auto *Shift = cast<BinaryOperator>(Trunc->getOperand(0));
+
+    // Materialize the proven signed value at the original shift.
+    // This insertion point dominates all uses of the original trunc.
+    Builder.SetInsertPoint(Shift);
+    Builder.SetCurrentDebugLocation(Shift->getDebugLoc());
+
+    Value *WideV = Builder.CreateAShr(Shift->getOperand(0),
+                                      Shift->getOperand(1), "clamp.signed");
+    // Mark trunc to be replaced by ashr, we have proven it's safe.
+    WideCtx.OldToNew[Trunc] = WideV;
+  }
+
+  auto RewriteSafeWrap = [&](Instruction *I) {
+    if (!Plan.SafeWrap.contains(I))
+      return;
+
+    auto *ICmp = dyn_cast<ICmpInst>(*I->user_begin());
+    assert(ICmp && "didn't find icmp on wrapping add or sub");
+
+    APInt NewOpConstant;
+    APInt ICmpConstant;
+
+    if (!computeSignedICmpWrapConstants(I, ICmp, Plan.NarrowWidth,
+                                        Plan.WideWidth, NewOpConstant,
+                                        ICmpConstant))
+      llvm_unreachable("Cannot apply safe wrap on add or sub");
+
+    I->setOperand(1, ConstantInt::get(WideType, NewOpConstant));
+    // The new arithmetic hasn't been proved to preserve no wrap flags.
+    I->dropPoisonGeneratingFlags();
+
+    // For the transformation to be legal we must change the comparison from
+    // signed to unsigned.
+    ICmp->setSameSign(false);
+    ICmp->setPredicate(ICmpInst::getUnsignedPredicate(ICmp->getPredicate()));
+    ICmp->setOperand(0, I);
+    ICmp->setOperand(1, ConstantInt::get(WideType, ICmpConstant));
+    return;
+  };
+
+  auto PromoteIntrinsic = [&](Instruction *I) {
+    auto *II = cast<IntrinsicInst>(I);
+    Intrinsic::ID IID = II->getIntrinsicID();
+    Function *NewDeclaration =
+        Intrinsic::getOrInsertDeclaration(II->getModule(), IID, {WideType});
+    II->dropPoisonGeneratingAttributes();
+    II->mutateType(WideType);
+    cast<CallInst>(I)->setCalledFunction(NewDeclaration);
+  };
+
+  auto CanMaintainWrap = [&](Instruction *I, uint8_t Flag) -> bool {
+    unsigned Opc = I->getOpcode();
+    if (Opc != Instruction::Add && Opc != Instruction::Sub)
+      return false;
+
+    // The signed range requires NarrowWidth < WideWidth.
+    // I's currentType is the NarrowWidth.
+    if (I->getType()->getIntegerBitWidth() >= Plan.WideWidth)
+      return false;
+
+    if (Plan.SafeWrap.contains(I))
+      return false;
+
+    auto Op0Fill = getRequiredFillForWideUse(&I->getOperandUse(0), WideCtx);
+    if (Op0Fill == UNDEFINED)
+      return false;
+    auto Op1Fill = getRequiredFillForWideUse(&I->getOperandUse(1), WideCtx);
+    if (Op1Fill == UNDEFINED)
+      return false;
+
+    if (Op0Fill != SIGN || Op1Fill != SIGN)
+      return false;
+
+    // if ops are sign extended in the narrow width
+    // we have A, B ∈ [-2^(n-1), 2 ^(n-1) - 1]
+    // So,
+    // A+B ∈ [-2^(N), 2 ^ (n) - 2]
+    // Similarly, for sub.
+    if (Flag == llvm::OverflowingBinaryOperator::NoSignedWrap)
+      return true;
+
+    // TODO: handle unsigned wrap.
+    return false;
+  };
+
+  SmallPtrSet<Instruction *, 8> NswInsts;
+  for (auto *I : Plan.InstsToPromote) {
+    if (I->getOpcode() == Instruction::ICmp)
+      continue;
+    if (isa<IntrinsicInst>(I)) {
+      PromoteIntrinsic(I);
+      continue;
+    }
+    // Capture possible nsw insts here before we rewrite operands of I.
+    if (CanMaintainWrap(I, llvm::OverflowingBinaryOperator::NoSignedWrap))
+      NswInsts.insert(I);
+
+    I->mutateType(WideType);
+  }
+
+  for (Instruction *I : Plan.ExtsToReplaceWithOperand) {
+    Builder.SetInsertPoint(I);
+    IntegerFillType Fill = I->getOpcode() == Instruction::SExt ? SIGN : ZEROS;
+    if (auto *ZExt = dyn_cast<ZExtInst>(I); ZExt) {
+      auto OpFill = Plan.RequiredFill.lookup_or(ZExt->getOperand(0), UNDEFINED);
+      if (OpFill == SIGN)
+        Fill = SIGN;
+    }
+    Value *Replacement = getWideValue(I->getOperand(0), WideCtx, Fill);
+    assert(Replacement && Replacement->getType() == I->getType() &&
+           "Didn't find replacement or replacement with the intended type");
+
+    I->replaceAllUsesWith(Replacement);
+    InstsToRemove.insert(I);
+  }
+
+  // Preserve shared incoming values for duplicate predecessor edges
+  // Otherwise we might create an extension on the same value twice
+  // from the same block.
+  // PHI entries for the same predecessor must reference the same SSA value.
+  using PhiWideOpKey = std::tuple<BasicBlock *, Value *, IntegerFillType>;
+  SmallMapVector<PhiWideOpKey, Value *, 8> PhiWideOps;
+  for (auto *I : Plan.InstsToPromote) {
+    for (auto [OpIdx, OpUse] : enumerate(I->operands())) {
+
+      if (!isWidenedOp(OpUse))
+        continue;
+
+      // Rewriting safe wraps constants happens elsewhere.
+      if (Plan.SafeWrap.contains(I) && OpIdx == 1)
+        continue;
+
+      auto IsPhiOp = I->getOpcode() == Instruction::PHI;
+      BasicBlock *IncomingBB = nullptr;
+      if (auto *Phi = dyn_cast<PHINode>(I)) {
+
+        IncomingBB = Phi->getIncomingBlock(OpIdx);
+        Builder.SetInsertPoint(IncomingBB->getTerminator());
+        Builder.SetCurrentDebugLocation(Phi->getDebugLoc());
+
+      } else {
+        Builder.SetInsertPoint(I);
+        Builder.SetCurrentDebugLocation(I->getDebugLoc());
+      }
+      IntegerFillType OpFill = getRequiredFillForWideUse(&OpUse, WideCtx);
+      Value *OldOp = OpUse.get();
+      Value *WideOp = nullptr;
+      if (IsPhiOp) {
+        auto [It, Inserted] = PhiWideOps.try_emplace(
+            PhiWideOpKey{IncomingBB, OldOp, OpFill}, nullptr);
+        if (Inserted) {
+          // if it was inserted, store the Wide Value for the Op
+          // so we don't need to create it again
+          It->second = getWideValue(OldOp, WideCtx, OpFill);
+        }
+        WideOp = It->second;
+      } else {
+        WideOp = getWideValue(OldOp, WideCtx, OpFill);
+      }
+      assert(WideOp && "wide graph plan has an unsupported operand");
+
+      OpUse.set(WideOp);
+    }
+
+    RewriteSafeWrap(I);
+    // After widening all flags must be dropped
+    // check if we can maybe preserve exact.
+    // TODO: try to reconstruct the flags
+    I->dropPoisonGeneratingAnnotations();
+    if (NswInsts.contains(I))
+      I->setHasNoSignedWrap();
+  }
+
+  Value *ClampRepair = nullptr;
+  for (const BoundaryRewrite &Rewrite : Plan.BoundaryRewrites) {
+    // At wide graph we only repair values that are widened
+    // but they have a use that still needs the narrow type.
+    if (Rewrite.Kind != RepairNarrowValue)
+      continue;
+    assert(Rewrite.ExtUse && Rewrite.User && Rewrite.ResultTy &&
+           "Didn't find appropriate Rewrite");
+
+    assert(Rewrite.ResultTy->isIntegerTy() &&
+           "Found non int ty but it's not supported");
+    assert(Rewrite.ResultTy->getScalarSizeInBits() < Plan.WideWidth &&
+           "Found wide rewrite");
+
+    if (Plan.TruncToReplaceWithAShr && ClampRepair) {
+      Rewrite.ExtUse->set(ClampRepair);
+      continue;
+    }
+
+    if (Plan.TruncToReplaceWithAShr != nullptr) {
+      auto *Def = cast<Instruction>(Rewrite.OriginalValue);
+      Builder.SetInsertPoint(Def->getNextNode());
+    } else
+      Builder.SetInsertPoint(Rewrite.User);
+
+    Builder.SetCurrentDebugLocation(Rewrite.User->getDebugLoc());
+
+    Value *OldV = Rewrite.OriginalValue;
+    IntegerFillType VFill = getRequiredFillForWideValue(OldV, WideCtx);
+    // We need to promote the Wide Value but a use requires the same Value
+    // at Narrow Width, so we insert a truncate to preserver correctness.
+    Value *WideV = getWideValue(OldV, WideCtx, VFill);
+    assert(WideV != nullptr && "Couldn't get wide value on Boundary");
+
+    // We can set Nsw if it's a free signed repair.
+    bool IsNsw =
+        hasFreeSignedRepair(Rewrite, Plan.NarrowWidth, Plan.RequiredFill);
+
+    if (auto Trunc = dyn_cast<TruncInst>(Rewrite.OriginalValue))
+      IsNsw |= Trunc->hasNoSignedWrap() && Trunc->getOperand(0) == WideV &&
+               Trunc->getType() == Rewrite.ResultTy;
+
+    Value *Repair = WideV;
+    if (WideV->getType() != Rewrite.ResultTy)
+      Repair = Builder.CreateTrunc(WideV, Rewrite.ResultTy, "", false, IsNsw);
+
+    if (Plan.TruncToReplaceWithAShr)
+      ClampRepair = Repair;
+
+    // Repair the specific user to narrowTy.
+    Rewrite.ExtUse->set(Repair);
+  }
+
+  if (auto *Cast = dyn_cast<CastInst>(Ext)) {
+    Builder.SetInsertPoint(Cast);
+    Builder.SetCurrentDebugLocation(Cast->getDebugLoc());
+    auto ExtReplacement = getWideValue(Cast, WideCtx, WideCtx.Fill);
+    assert(ExtReplacement != nullptr && "Couldn't get wide value on Extension");
+    // if it's a zext we might need a repair if the G Source FillType is Sign.
+    ExtReplacement =
+        repairSourcePromoteSignedZExt(ExtReplacement, Cast, WideCtx);
+    Cast->replaceAllUsesWith(ExtReplacement);
+    InstsToRemove.insert(Cast);
+  }
+  for (auto I : Plan.InstsToRemove) {
+    InstsToRemove.insert(I);
+  }
+
+  return true;
+}
+
+bool Rebuilder::applyPlan(Instruction *Ext, const ExtRewritePlan &Plan) {
+
+  bool Changed = false;
+  switch (Plan.Kind) {
+  case ExtStrategy::PromoteSource:
+  case ExtStrategy::PromoteICmpRoot:
+    Changed = applyWideGraphPlan(Ext, Plan);
+    break;
+  case ExtStrategy::KeepExt:
+    // we just keep this extension.
+    Changed = false;
+    break;
+  case ExtStrategy::NarrowGraph:
+    Changed = applyNarrowGraphPlan(cast<CastInst>(Ext), Plan);
+    break;
+  case ExtStrategy::PromoteTruncSource:
+    Changed = applyTruncRootPlan(cast<CastInst>(Ext), Plan);
+    break;
+  case ExtStrategy::SplitExtUses:
+    Changed = applySplitExtUses(cast<CastInst>(Ext), Plan);
+    break;
+  default:
+    llvm_unreachable("unknown extension rewriting strategy");
+  }
+  return Changed;
+}
+
+bool Rebuilder::eraseMarkedInstructions() {
+
+  bool Changed = false;
+
+  if (InstsToRemove.empty())
+    return false;
+
+  for (auto *I : InstsToRemove) {
+    ++NumInstsRemoved;
+    switch (I->getOpcode()) {
+    case Instruction::Trunc:
+      ++NumTruncatesDropped;
+      break;
+    case Instruction::SExt:
+      ++NumSExtsDropped;
+      break;
+    case Instruction::ZExt:
+      ++NumZExtsDropped;
+      break;
+    default:
+      break;
+    }
+  }
+
+  for (Instruction *I : InstsToRemove) {
+    I->dropAllReferences();
+  }
+  for (Instruction *I : InstsToRemove) {
+    LLVM_DEBUG(dbgs() << "removing Inst --> " << *I << "\n");
+    I->eraseFromParent();
+    Changed = true;
+  }
+  InstsToRemove.clear();
+  return Changed;
+}
+
+bool WideningIntegerArithmetic::run(
+    Function &F, const TargetMachine *TM, const TargetLowering *TLI,
+    const TargetTransformInfo *TTI, const DataLayout *DL, DemandedBits *DB,
+    LoopInfo *LI, DominatorTree *DT, AssumptionCache *AC,
+    OptimizationRemarkEmitter *ORE, ArrayRef<Instruction *> RewriteCandidates) {
+  auto &FBB = F.getEntryBlock();
+  if (FBB.empty()) {
+    return false;
+  }
+  this->TLI = TLI;
+  this->TTI = TTI;
+  this->DL = DL;
+  this->DB = DB;
+  this->LI = LI;
+  this->Ctx = &F.getContext();
+  this->DT = DT;
+  this->AC = AC;
+  this->ORE = ORE;
+  setFillType((&*(FBB.begin())->getType()));
+  RegisterBitWidth =
+      TTI->getRegisterBitWidth(TargetTransformInfo::RGK_Scalar).getFixedValue();
+  // NOTE: Forward Analysis to get Candidate Widths, see Widening Integer
+  // Arithmetic Paper or overview in this file for a shorter description.
+  bool ForwardAnalysisComputed = false;
+  DeferredWiaAnalysis = false;
+  auto EnsureWiaAnalysis = [&]() {
+    if (ForwardAnalysisComputed)
+      return;
+
+    ForwardAnalysisComputed = true;
+    DeferredWiaAnalysis = false;
+    visitWidening(F);
+  };
+  EnsureForwardAnalysis = EnsureWiaAnalysis;
+
+  SmallPtrSet<Instruction *, 32> RejectedSeeds;
+  SmallPtrSet<Instruction *, 32> AcceptedSeeds;
+  auto ClassifyPromotionSeed = [&](Instruction *Seed) {
+    if (RejectedSeeds.contains(Seed))
+      return RegionResult::Rejected;
+    if (AcceptedSeeds.contains(Seed))
+      return RegionResult::Accepted;
+
+    SmallPtrSet<Instruction *, 4> NoRelevant;
+    RegionResult Result =
+        CollectRelevantRegion(Seed, nullptr, NoRelevant, RejectedSeeds, 512);
+
+    if (Result == RegionResult::Rejected)
+      RejectedSeeds.insert(Seed);
+    else if (Result == RegionResult::Accepted)
+      AcceptedSeeds.insert(Seed);
+
+    return Result;
+  };
+
+  auto HasAppropriateSolution = [&](Value *V, unsigned Width,
+                                    IntegerFillType Fill) {
+    if (Fill == ANYTHING && V->getType()->isIntegerTy(Width))
+      return true;
+
+    if (auto *Ret = dyn_cast<ReturnInst>(V)) {
+      Value *RetV = Ret->getReturnValue();
+      if (!RetV || (RetV->getType()->isIntegerTy() &&
+                    !RetV->getType()->isIntegerTy(Width)))
+        return false;
+    }
+
+    if (!ForwardAnalysisComputed) {
+      auto Res =
+          tryToGetLocalPromotionSolution(V, Width, Fill, ClassifyPromotionSeed);
+      if (Res.has_value()) {
+        DeferredWiaAnalysis = true;
+        return *Res;
+      }
+    }
+
+    EnsureWiaAnalysis();
+    return hasPromotionSolution(V, Width, Fill);
+  };
+
+  auto ChooseOpsFills = [&](Instruction *I, IntegerFillType ResultFill,
+                            SmallVectorImpl<IntegerFillType> &OpsFills,
+                            SmallVectorImpl<FillTuple> *GeneratedTuples =
+                                nullptr) {
+    return chooseFillTuple(I, ResultFill, OpsFills, GeneratedTuples);
+  };
+
+  auto GetExtMaterializationCost = [&](Type *SrcTy, Type *DstTy,
+                                       IntegerFillType Fill) {
+    return getExtTTICost(SrcTy, DstTy, Fill);
+  };
+
+  auto IsZExtFree = [&](Type *SrcTy, Type *DstTy) {
+    return TLI && TLI->isZExtFree(SrcTy, DstTy);
+  };
+
+  auto IsExtFree = [&](Instruction *I) { return TLI && TLI->isExtFree(I); };
+
+  auto GetKnownBitsCached = [&](Value *V, KnownBits &KB) {
+    getKnownBitsCached(V, KB);
+  };
+
+  auto IsKnownNonNeg = [&](Value *V) { return isKnownNonNeg(V); };
+  WIAInfo WiaInfo = {HasAppropriateSolution,
+                     ChooseOpsFills,
+                     GetExtMaterializationCost,
+                     IsZExtFree,
+                     IsExtFree,
+                     GetKnownBitsCached,
+                     IsKnownNonNeg};
+
+  bool OptimizeForSize = F.hasMinSize();
+  ExtRewritePlanner Planner(*DB, TTI, TLI, DL, LI, WiaInfo, *Ctx,
+                            OptimizeForSize, ORE);
+  Rebuilder Rewriter(AvailableSolutions, *F.getParent(), DL, DT, AC);
+  bool Changed = false;
+
+  // After WIA, we have new widths per value
+  // we can use that for the planner.
+  // Do not apply each plan straight away, this can cause
+  // bugs to the DemandedBits Analysis.
+  SmallVector<ExtRewritePlan, 16> RewritePlans;
+  {
+    for (Instruction *Root : RewriteCandidates) {
+      if (auto Plan = Planner.analyze(Root))
+        RewritePlans.emplace_back(std::move(*Plan));
+    }
+  }
+
+  for (const ExtRewritePlan &RewritePlan : RewritePlans) {
+    if (RewritePlan.Kind == ExtStrategy::SplitExtUses)
+      continue;
+
+    bool ChangedOnce = Rewriter.applyPlan(RewritePlan.Ext, RewritePlan);
+    if (ChangedOnce)
+      Changed = true;
+  }
+
+  // Apply split-use plans last because other plans may change operand types.
+  for (const ExtRewritePlan &RewritePlan : RewritePlans) {
+    if (RewritePlan.Kind != ExtStrategy::SplitExtUses)
+      continue;
+    bool ChangedOnce = Rewriter.applyPlan(RewritePlan.Ext, RewritePlan);
+    if (ChangedOnce)
+      Changed = true;
+  }
+  Changed |= Rewriter.eraseMarkedInstructions();
+
+  clearTables();
+  if (Changed) {
+    LLVM_DEBUG(dbgs() << "Final Function after all modifications is --> "
+                      << "\n"
+                      << F << "\n");
+  }
+  return Changed;
+}
+
+namespace {
+
+class WideningIntegerArithmeticLegacy : public FunctionPass {
+public:
+  static char ID;
+
+  WideningIntegerArithmeticLegacy() : FunctionPass(ID) {}
+
+  StringRef getPassName() const override {
+    return "WideningIntegerArithmeticLegacy";
+  }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<TargetPassConfig>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
+    AU.addRequired<DemandedBitsWrapperPass>();
+    AU.addRequired<LoopInfoWrapperPass>();
+    AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addRequired<AssumptionCacheTracker>();
+    AU.addRequired<OptimizationRemarkEmitterWrapperPass>();
+    AU.setPreservesCFG();
+  }
+
+  bool runOnFunction(Function &F) override {
+    if (skipFunction(F) || !F.hasMinSize())
+      return false;
+
+    SmallVector<Instruction *, 16> RewriteCandidates;
+    for (BasicBlock &BB : F)
+      for (Instruction &I : BB)
+        if (isWIARoot(I))
+          RewriteCandidates.push_back(&I);
+
+    if (RewriteCandidates.empty())
+      return false;
+
+    auto &TPC = getAnalysis<TargetPassConfig>();
+    auto *TM = &TPC.getTM<TargetMachine>();
+    const auto *DL = &F.getParent()->getDataLayout();
+    const auto *TLI = TM->getSubtargetImpl(F)->getTargetLowering();
+
+    auto &TTI = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
+    auto &DB = getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
+    auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+    auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+    auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
+    auto &ORE = getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE();
+
+    WideningIntegerArithmetic WIA;
+    return WIA.run(F, TM, TLI, &TTI, DL, &DB, &LI, &DT, &AC, &ORE,
+                   RewriteCandidates);
+  }
+};
+
+} // end anonymous namespace
+
+char WideningIntegerArithmeticLegacy::ID = 0;
+
+INITIALIZE_PASS_BEGIN(WideningIntegerArithmeticLegacy, DEBUG_TYPE,
+                      "WideningIntegerArithmeticLegacy", false, false)
+INITIALIZE_PASS_DEPENDENCY(TargetPassConfig)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(DemandedBitsWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
+INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitterWrapperPass)
+INITIALIZE_PASS_END(WideningIntegerArithmeticLegacy, DEBUG_TYPE,
+                    "WideningIntegerArithmeticLegacy", false, false)
+
+FunctionPass *llvm::createWideningIntegerArithmeticLegacyPass() {
+  return new WideningIntegerArithmeticLegacy();
+}
+
+PreservedAnalyses WIAPass::run(Function &F, FunctionAnalysisManager &AM) {
+  if (!TM || (OnlyMinSize && !F.hasMinSize()))
+    return PreservedAnalyses::all();
+
+  SmallVector<Instruction *, 16> RewriteCandidates;
+  for (BasicBlock &BB : F)
+    for (Instruction &I : BB)
+      if (isWIARoot(I))
+        RewriteCandidates.push_back(&I);
+
+  if (RewriteCandidates.empty())
+    return PreservedAnalyses::all();
+
+  const auto *DL = &F.getParent()->getDataLayout();
+  const auto *TLI = TM->getSubtargetImpl(F)->getTargetLowering();
+  auto &TTI = AM.getResult<TargetIRAnalysis>(F);
+  auto &DB = AM.getResult<DemandedBitsAnalysis>(F);
+  auto &LI = AM.getResult<LoopAnalysis>(F);
+  auto &ORE = AM.getResult<OptimizationRemarkEmitterAnalysis>(F);
+  auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
+  auto &AC = AM.getResult<AssumptionAnalysis>(F);
+
+  bool Changed;
+  WideningIntegerArithmetic WIA;
+  Changed = WIA.run(F, TM, TLI, &TTI, DL, &DB, &LI, &DT, &AC, &ORE,
+                    RewriteCandidates);
+  if (!Changed)
+    return PreservedAnalyses::all();
+
+  PreservedAnalyses PA;
+  PA.preserveSet<CFGAnalyses>();
+  return PA;
+}
+
+bool llvm::isWIADisabled() { return DisableWIA; }

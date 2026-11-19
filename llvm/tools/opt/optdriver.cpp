@@ -390,6 +390,7 @@ static bool shouldPinPassToLegacyPM(StringRef Pass) {
       "expand-ir-insts",
       "inline-asm-prepare",
       "scalarizer",
+      "widening-integer-arithmetic",
   };
   for (StringLiteral P : PassNamePrefix)
     if (Pass.starts_with(P))

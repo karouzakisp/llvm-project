@@ -158,6 +158,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeTailDuplicateLegacyPass(Registry);
   initializeTargetPassConfigPass(Registry);
   initializeTwoAddressInstructionLegacyPassPass(Registry);
+  initializeWideningIntegerArithmeticLegacyPass(Registry);
   initializeTypePromotionLegacyPass(Registry);
   initializeUnpackMachineBundlesLegacyPass(Registry);
   initializeUnreachableBlockElimLegacyPassPass(Registry);
